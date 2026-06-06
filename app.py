@@ -163,25 +163,32 @@ with st.expander("📎 Optional: Dokument hochladen (PDF), aus dem Werte extrahi
         st.rerun()
 
 # ---- Bisherigen Verlauf anzeigen -------------------------------------
+def _block_attr(b, name):
+    """Liest ein Feld sowohl aus Dicts als auch aus API-Objekten (Pydantic)."""
+    if isinstance(b, dict):
+        return b.get(name)
+    return getattr(b, name, None)
+
+
 def zeige_verlauf():
     for m in st.session_state.messages:
         if m["role"] == "user":
             inhalt = m["content"]
             if isinstance(inhalt, list):
-                texte = [b["text"] for b in inhalt if b.get("type") == "text"]
+                texte = [_block_attr(b, "text") for b in inhalt
+                         if _block_attr(b, "type") == "text"]
                 if texte:
                     with st.chat_message("user"):
                         st.markdown(texte[0])
-            else:
+            elif isinstance(inhalt, str):
                 with st.chat_message("user"):
                     st.markdown(inhalt)
         elif m["role"] == "assistant":
             if isinstance(m["content"], list):
                 for b in m["content"]:
-                    if b.get("type") == "text":
+                    if _block_attr(b, "type") == "text":
                         with st.chat_message("assistant"):
-                            st.markdown(b["text"])
-
+                            st.markdown(_block_attr(b, "text"))
 zeige_verlauf()
 
 # =============================================================
