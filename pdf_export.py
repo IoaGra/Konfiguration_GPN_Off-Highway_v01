@@ -116,7 +116,7 @@ def erstelle_ergebnis_pdf(ergebnis: dict, zusammenfassung: str,
     story.append(Spacer(1, 18))
     story.append(Paragraph(
         "<i>Hinweis: Die Nutzwerte wurden deterministisch berechnet "
-        "(relative Min-Max-Normalisierung, gewichtete Aggregation der "
+        "(Zielwert-Normierung je Kennzahl, gewichtete Aggregation der "
         "Leistungsdimensionen). Dieses Dokument wurde automatisch erstellt.</i>",
         s["Unterzeile"]))
 

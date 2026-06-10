@@ -1,21 +1,20 @@
-dimension;kennzahl;kennzahl_id;quelle;einheit;richtung;verlagerung;lieferantenwechsel;sop_neu;make_or_buy;eop_restvolumen;referenz
-Qualitaet;Qualitaetsrate;qualitaetsrate;Gottmann 2019 + Verhaelen et al. 2021;%;max;1;1;1;1;0;0
-Qualitaet;Reklamationsrate;reklamationsrate;Verhaelen et al. 2021;%;min;1;1;1;1;0;0
-Qualitaet;Ausschussquote;ausschussquote;Gottmann 2019;%;min;1;1;1;1;0;0
-Qualitaet;Liefertreue-Rate (OTD);liefertreue_rate;Verhaelen et al. 2021;%;max;1;1;1;1;0;0
-Zeit;Durchlaufzeit;durchlaufzeit;Gottmann 2019 + Verhaelen et al. 2021;Zeit;min;1;0;1;1;1;0
-Zeit;Durchlaufzeitabweichung;durchlaufzeitabweichung;Verhaelen et al. 2021;Zeit;min;1;1;1;1;0;0
-Zeit;Termintreue;termintreue;Gottmann 2019 + Verhaelen et al. 2021;%;max;1;1;1;1;0;0
-Zeit;Wiederbeschaffungszeit;wiederbeschaffungszeit;Gottmann 2019;Zeit;min;1;1;0;1;0;0
-Flexibilitaet;Produktflexibilitaet;produktflexibilitaet;Verhaelen et al. 2021;%;max;1;0;1;1;1;0
-Flexibilitaet;Losgroesse / Variantenflexibilitaet;variantenflexibilitaet;Gottmann 2019 + Verhaelen et al. 2021;%;max;1;0;1;1;1;0
-Flexibilitaet;Reaktionszeit Lieferanten;reaktionszeit_lieferanten;Gottmann 2019;Zeit;min;0;1;0;1;0;0
-Flexibilitaet;Kapazitaetsauslastung (freie Kapazitaet);kapazitaetsauslastung;Gottmann 2019 + Verhaelen et al. 2021;%;max;1;0;1;1;1;0
-Effizienz;Produktivitaet;produktivitaet;Gottmann 2019 + Verhaelen et al. 2021;Stueck/h;max;1;0;1;1;1;0
-Effizienz;Produktstueckkosten;produktstueckkosten;Verhaelen et al. 2021;Geldeinheit;min;1;1;1;1;1;0
-Effizienz;Materialbestand;materialbestand;Verhaelen et al. 2021;Geldeinheit;min;1;1;1;1;1;0
-Effizienz;OEE / Anlagenverfuegbarkeit;oee;Gottmann 2019;%;max;1;0;1;1;1;0
-Oekologische Nachhaltigkeit;Transportemissionen;transportemissionen;Schollemann 2025;t CO2;min;1;1;1;1;1;0
-Oekologische Nachhaltigkeit;Rate erneuerbarer Energien im Netzwerk;rate_erneuerbare_energien;Schollemann 2025;%;max;1;0;1;1;0;0
-Oekologische Nachhaltigkeit;Recyclingmaterial-Anteil;recyclingmaterial_anteil;Schollemann 2025;%;max;1;1;1;1;0;0
-Oekologische Nachhaltigkeit;Flaecheninanspruchnahme;flaecheninanspruchnahme;Schollemann 2025;km2;min;1;0;1;0;1;0
+dimension;kennzahl;kennzahl_id;einheit;richtung;verlagerung;lieferantenwechsel;sop_neu;make_or_buy;eop_restvolumen;referenz
+Effizienz;Kapazitätsauslastung;kapazitaetsauslastung;%;max;1;1;1;1;1;1
+Effizienz;Fertigungskosten;fertigungskosten;EUR/Stk;min;1;1;1;1;1;1
+Effizienz;Materialbestand;materialbestand;EUR;min;1;1;1;1;1;1
+Effizienz;OEE;oee;%;max;1;1;1;1;1;1
+Qualitaet;Qualitätsrate;qualitaetsrate;%;max;1;1;1;1;1;1
+Qualitaet;Reklamationsrate;reklamationsrate;%;min;1;1;1;1;1;1
+Qualitaet;Liefertermintreue;liefertermintreue;%;max;1;1;1;1;1;1
+Qualitaet;Ausschussquote;ausschussquote;%;min;1;1;1;1;1;1
+Qualitaet;Nacharbeitsquote;nacharbeitsquote;%;min;1;1;1;1;1;1
+Zeit;Durchlaufzeit;durchlaufzeit;Tage;min;1;1;1;1;1;1
+Zeit;Durchlaufzeitabweichung;durchlaufzeitabweichung;Tage;min;1;1;1;1;1;1
+Zeit;Transportzeit;transportzeit;Tage;min;1;1;1;1;1;1
+Flexibilitaet;Produktflexibilität;produktflexibilitaet;%;max;1;1;1;1;1;1
+Flexibilitaet;Losgröße;losgroesse;Stk;min;1;1;1;1;1;1
+Flexibilitaet;Volumenflexibilität;volumenflexibilitaet;%;max;1;1;1;1;1;1
+Flexibilitaet;Variantenflexibilität;variantenflexibilitaet;%;max;1;1;1;1;1;1
+Flexibilitaet;Transportvolumenflexibilität;transportvolumenflexibilitaet;%;max;1;1;1;1;1;1
+Oekologische Nachhaltigkeit;CO2-Emissionen;co2_emissionen;kg/Jahr;min;1;1;1;1;1;1
+Oekologische Nachhaltigkeit;Anteil erneuerbarer Energie;anteil_erneuerbare_energie;%;max;1;1;1;1;1;1

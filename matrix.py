@@ -14,6 +14,7 @@ Erwartetes CSV-Format (Spalten):
 
 import csv
 from kennzahlen import KpiDefinition
+from kennzahl_definitionen import zielwert as _zielwert
 
 # feste Spalten, die KEINE Szenario-Typen sind
 _FIXE_SPALTEN = {"dimension", "kennzahl", "kennzahl_id", "quelle", "einheit", "richtung"}
@@ -53,6 +54,7 @@ def lade_matrix(pfad: str = "szenario_kennzahl_matrix.csv"):
             kennzahl_id=kid,
             dimension=z["dimension"].strip(),
             richtung=z["richtung"].strip(),
+            zielwert=_zielwert(kid),
         )
         matrix[kid] = {typ: int(z[typ]) for typ in szenario_typen}
         meta[kid] = {

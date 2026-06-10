@@ -25,9 +25,10 @@ import base64
 import streamlit as st
 import anthropic
 
-from kennzahlen import berechne_nutzwerte, KpiDefinition
+from kennzahlen import berechne_nutzwerte, KpiDefinition, oee
 from matrix import (lade_matrix, aktive_kennzahlen, dimensionen_im_typ,
                     SZENARIO_TYP_LABELS)
+from kennzahl_definitionen import erfassung as kz_erfassung
 from szenarien import SZENARIO_BESCHREIBUNGEN
 from dimensionen import dim_beschreibung
 from daten import lade_beispieldaten
@@ -94,9 +95,23 @@ def kennzahlen_nach_dimension(typ):
 
 
 def rechne(rohwerte, gewichte, typ):
-    """Deterministische Berechnung. rohwerte: {szenario: {kid: wert}}."""
+    """Deterministische Berechnung. rohwerte: {szenario: {kid: wert}}.
+    Sonderfall OEE: liegen statt 'oee' die drei Faktoren vor
+    (oee_verfuegbarkeit, oee_leistungsgrad, oee_qualitaetsgrad), wird OEE
+    daraus deterministisch berechnet."""
     aktiv_kids = aktive_kennzahlen(MATRIX, typ)
     szenarien = list(rohwerte.keys())
+
+    # OEE aus Faktoren berechnen, falls noetig (veraendert eine Kopie)
+    rohwerte = {s: dict(kvs) for s, kvs in rohwerte.items()}
+    for s in szenarien:
+        kvs = rohwerte[s]
+        if "oee" not in kvs and all(k in kvs for k in
+                ("oee_verfuegbarkeit", "oee_leistungsgrad", "oee_qualitaetsgrad")):
+            kvs["oee"] = oee(kvs["oee_verfuegbarkeit"],
+                             kvs["oee_leistungsgrad"],
+                             kvs["oee_qualitaetsgrad"])
+
     aktiv = {s: {kid: (1 if kid in aktiv_kids else 0) for kid in KPI_DEFS}
              for s in szenarien}
     kpi_defs_aktiv = {kid: KPI_DEFS[kid] for kid in aktiv_kids}
@@ -175,12 +190,19 @@ def ordne_szenario_typ_zu(nutzertext):
 def baue_system_prompt():
     typ = st.session_state.typ
     aktiv_kids = aktive_kennzahlen(MATRIX, typ)
-    kennzahl_liste = ""
-    for kid in aktiv_kids:
-        m = META[kid]
-        kennzahl_liste += (f"- {kid}: {m['name']} "
-                           f"(Dimension {m['dimension']}, Einheit {m['einheit']}, "
-                           f"Richtung {KPI_DEFS[kid].richtung})\n")
+
+    # Kennzahlen nach Erfassungsart gruppieren, damit der Bot weiss, was zu tun ist
+    excel_kids = [k for k in aktiv_kids if kz_erfassung(k) == "excel"]
+    eingabe_kids = [k for k in aktiv_kids if kz_erfassung(k) == "eingabe"]
+    oee_kids = [k for k in aktiv_kids if kz_erfassung(k) == "oee"]
+    fiktiv_kids = [k for k in aktiv_kids if kz_erfassung(k) == "fiktiv"]
+
+    def liste(kids):
+        return "\n".join(
+            f"- {k}: {META[k]['name']} (Dimension {META[k]['dimension']}, "
+            f"Einheit {META[k]['einheit']}, Richtung {KPI_DEFS[k].richtung})"
+            for k in kids) or "- (keine)"
+
     label = SZENARIO_TYP_LABELS.get(typ, typ)
 
     excel_hinweis = ""
@@ -192,29 +214,42 @@ def baue_system_prompt():
                 zeilen.append(f"{standort}: " +
                               ", ".join(f"{k}={v}" for k, v in relevante.items()))
         if zeilen:
-            excel_hinweis = (
-                "\nFolgende Werte liegen als System-Daten (Excel) vor. Nutze sie "
-                "und kennzeichne sie als Herkunft 'system'. Frage sie NICHT erneut "
-                "ab:\n" + "\n".join(zeilen) + "\n")
+            excel_hinweis = "\n".join(zeilen)
 
     return f"""Du bist ein Assistent zur Entscheidungsunterstuetzung bei der \
 Konfiguration globaler Produktionsnetzwerke. Wir sind in Phase 4 (Datenabfrage).
 
-Szenario-Typ: '{label}'.
+Szenario-Typ: '{label}'. Der Nutzer vergleicht mehrere Konfigurationen \
+(z.B. mehrere Standorte, inkl. einer Referenz).
 
-Fuer diesen Typ sind ausschliesslich folgende Kennzahlen relevant:
-{kennzahl_liste}{excel_hinweis}
-Deine Aufgabe in Phase 4:
-1. Erfasse fuer MINDESTENS ZWEI Konfigurationen alle oben gelisteten Kennzahlen.
-2. Werte aus den System-Daten (Excel) uebernimmst du mit Herkunft 'system'. \
-Fehlende Werte fragst du beim Nutzer ab (Herkunft 'nutzer'). Wenn der Nutzer \
-einen Wert nicht kennt und du ihn schaetzen sollst, kennzeichne ihn als \
-'schaetzung'.
-3. Mache bei jeder Antwort transparent, welche Werte aus dem System stammen \
-und welche der Nutzer eingegeben hat.
-4. Wenn fuer alle Konfigurationen alle Kennzahlen erfasst sind, rufe das \
-Werkzeug 'speichere_daten' auf (NICHT rechnen - die Berechnung erfolgt spaeter \
-in Phase 5).
+Die relevanten Kennzahlen sind nach HERKUNFT gegliedert. Behandle sie genau so:
+
+A) SYSTEM-DATEN (Herkunft 'system') - liegen vor, NICHT erneut abfragen:
+{liste(excel_kids)}
+Konkrete Werte:
+{excel_hinweis or '- (keine hinterlegt)'}
+
+B) NUTZEREINGABE (Herkunft 'nutzer') - diese Werte MUSST du beim Nutzer abfragen:
+{liste(eingabe_kids)}
+
+C) OEE - Herkunft 'nutzer'. Frage je Konfiguration die DREI Faktoren ab: \
+Verfuegbarkeit, Leistungsgrad, Qualitaetsgrad (jeweils in %). Gib sie im \
+Werkzeug als drei Felder an: oee_verfuegbarkeit, oee_leistungsgrad, \
+oee_qualitaetsgrad. Den OEE-Gesamtwert berechnet das System selbst.
+{liste(oee_kids)}
+
+D) FIKTIVE WERTE (Herkunft 'schaetzung') - fuer diese Kennzahlen liegen keine \
+Daten vor und es gibt keine Formel. Setze selbst plausible, in sich stimmige \
+Werte ein und weise den Nutzer transparent darauf hin:
+{liste(fiktiv_kids)}
+
+Ablauf:
+1. Erfasse fuer MINDESTENS ZWEI Konfigurationen alle Kennzahlen.
+2. Mache transparent, welche Werte aus dem System stammen, welche der Nutzer \
+eingegeben hat und welche du fiktiv gesetzt hast.
+3. Wenn alle Konfigurationen vollstaendig sind, rufe das Werkzeug \
+'speichere_daten' auf. Gib OEE als drei Faktor-Felder an (nicht als oee). \
+NICHT rechnen - die Berechnung erfolgt in Phase 5.
 
 Antworte auf Deutsch, sachlich und knapp. Wenige Fragen gleichzeitig."""
 
@@ -464,6 +499,19 @@ if PHASE == 4:
         for kid in aktive_kennzahlen(MATRIX, TYP):
             zeile = {"Kennzahl": META[kid]["name"], "Einheit": META[kid]["einheit"]}
             for s in erfasst:
+                if kid == "oee":
+                    # OEE aus den drei Faktoren zusammensetzen, falls vorhanden
+                    f = erfasst[s]
+                    if all(g in f for g in ("oee_verfuegbarkeit",
+                                            "oee_leistungsgrad",
+                                            "oee_qualitaetsgrad")):
+                        wert = oee(f["oee_verfuegbarkeit"]["wert"],
+                                   f["oee_leistungsgrad"]["wert"],
+                                   f["oee_qualitaetsgrad"]["wert"])
+                        zeile[s] = f"{wert:.1f} (aus Faktoren, Nutzereingabe)"
+                    else:
+                        zeile[s] = "—"
+                    continue
                 eintrag = erfasst[s].get(kid)
                 if eintrag:
                     zeile[s] = f"{eintrag['wert']} ({HERKUNFT_LABEL.get(eintrag['herkunft'], eintrag['herkunft'])})"
@@ -499,7 +547,8 @@ if PHASE == 5:
     erg = st.session_state.letztes_ergebnis
 
     st.write("Die Nutzwerte wurden deterministisch berechnet: relative "
-             "Min-Max-Normalisierung je Kennzahl, Mittelung je Dimension, "
+             "Zielwert-Normierung je Kennzahl (Wert im Verhältnis zum "
+             "definierten Zielwert), Mittelung je Dimension, "
              "anschließend gewichtete Summe der Dimensionen.")
 
     st.markdown("**Verwendete Gewichtung:**")
