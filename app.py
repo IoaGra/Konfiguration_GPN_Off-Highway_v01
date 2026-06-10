@@ -1,20 +1,22 @@
 # =============================================================
-#  HAUPTANWENDUNG (Streamlit) - Version 3
+#  HAUPTANWENDUNG (Streamlit) - Version 4
 # =============================================================
 #  Entscheidungsunterstuetzung zur Konfiguration globaler
 #  Produktionsnetzwerke.
 #
-#  Ablauf in 7 STRIKTEN Phasen (jede muss abgeschlossen sein,
-#  bevor die naechste freigeschaltet wird):
-#    1 Auswahl des Szenarios (textliche Abfrage, kein Dropdown)
-#    2 Anzeige der relevanten Kennzahlen (nach Dimension)
-#    3 Gewichtung (Slider mit Auto-Ausgleich, Summe 100 %)
-#    4 Datenabfrage (Excel-Beispieldaten + Nutzereingabe)
-#    5 Berechnung der Scores (transparent, deterministisch)
-#    6 Sensitivitaetsanalyse (gleiche Slider, variieren)
-#    7 Ergebnis + Zusammenfassung + PDF-Download
+#  Neu gegenueber V3:
+#   - Freie Navigation: ueber die Fortschrittsanzeige links kann
+#     zu jeder Phase gesprungen werden (Daten bleiben erhalten).
+#   - Phase 2 zeigt zusaetzlich Erklaerungen zu den Dimensionen.
+#   - Datenabfrage mit Herkunft je Wert: 'system' (Excel),
+#     'nutzer' (Eingabe) oder 'schaetzung'. Die Herkunft wird
+#     transparent gemacht (Datenqualitaetsfaktor noch NICHT in
+#     der Berechnung aktiv, aber vorbereitet).
+#   - Phase 4 zeigt NUR eine Datenuebersicht (Wert, Einheit,
+#     Herkunft) - KEINE Nutzwerte.
+#   - Berechnung + Ergebnis erst in Phase 5.
 #
-#  Modell: Sonnet 4.6 (guenstiger als Opus, ausreichend).
+#  Modell: Sonnet 4.6.
 # =============================================================
 
 import os
@@ -27,17 +29,29 @@ from kennzahlen import berechne_nutzwerte, KpiDefinition
 from matrix import (lade_matrix, aktive_kennzahlen, dimensionen_im_typ,
                     SZENARIO_TYP_LABELS)
 from szenarien import SZENARIO_BESCHREIBUNGEN
+from dimensionen import dim_beschreibung
 from daten import lade_beispieldaten
 from anzeige import dim_anzeige
-from phasen import (PHASEN, ANZAHL_PHASEN, einfuehrungstext, phasen_uebersicht)
+from phasen import PHASEN, ANZAHL_PHASEN, einfuehrungstext
 from pdf_export import erstelle_ergebnis_pdf
 
 # -------------------------------------------------------------
 #  Grundeinstellungen
 # -------------------------------------------------------------
-MODELL = "claude-sonnet-4-6"          # guenstiger als Opus, fuer diesen Zweck ausreichend
-MAX_TOKENS = 1500                     # deckelt Ausgabekosten pro Schritt
+MODELL = "claude-sonnet-4-6"
+MAX_TOKENS = 1500
 EXCEL_PFAD = "beispieldaten.xlsx"
+
+# Herkunfts-Kennzeichnung (Transparenz). Der Zahlenwert ist der spaetere
+# Datenqualitaetsfaktor (Variante A) - aktuell nur zur Anzeige, NICHT in der
+# Berechnung verwendet.
+HERKUNFT_LABEL = {
+    "system": "aus System (Excel)",
+    "nutzer": "Nutzereingabe",
+    "schaetzung": "Schätzung",
+}
+HERKUNFT_FAKTOR = {"system": 0.7, "nutzer": 1.0, "schaetzung": 0.3}
+
 st.set_page_config(page_title="Entscheidungsmodell Produktionsnetzwerke",
                    page_icon="🏭", layout="wide")
 
@@ -52,7 +66,7 @@ except Exception:
     st.stop()
 
 # -------------------------------------------------------------
-#  Statische Daten laden (gecached)
+#  Statische Daten (gecached)
 # -------------------------------------------------------------
 @st.cache_data
 def _lade_matrix():
@@ -70,7 +84,6 @@ EXCEL_WERTE, EXCEL_STANDORTE = _lade_excel()
 # =============================================================
 
 def kennzahlen_nach_dimension(typ):
-    """Gibt {dimension: [(kennzahl_id, name, einheit, richtung), ...]} fuer den Typ."""
     aktiv = aktive_kennzahlen(MATRIX, typ)
     gruppen = {}
     for kid in aktiv:
@@ -81,7 +94,7 @@ def kennzahlen_nach_dimension(typ):
 
 
 def rechne(rohwerte, gewichte, typ):
-    """Deterministische Berechnung ueber kennzahlen.py."""
+    """Deterministische Berechnung. rohwerte: {szenario: {kid: wert}}."""
     aktiv_kids = aktive_kennzahlen(MATRIX, typ)
     szenarien = list(rohwerte.keys())
     aktiv = {s: {kid: (1 if kid in aktiv_kids else 0) for kid in KPI_DEFS}
@@ -98,8 +111,14 @@ def rechne(rohwerte, gewichte, typ):
     }
 
 
+def nur_rohwerte(erfasst):
+    """Extrahiert {szenario: {kid: wert}} aus der Erfassung mit Herkunft
+    ({szenario: {kid: {'wert':..., 'herkunft':...}}})."""
+    return {s: {kid: eintrag["wert"] for kid, eintrag in kvs.items()}
+            for s, kvs in erfasst.items()}
+
+
 def slider_geaendert(geaendert, dims):
-    """Auto-Ausgleich der Gewichtsregler: Summe bleibt 100."""
     neu = st.session_state[f"w_{geaendert}"]
     andere = [d for d in dims if d != geaendert]
     if not andere:
@@ -120,8 +139,7 @@ def slider_geaendert(geaendert, dims):
         st.session_state.gewichte[d] = st.session_state[f"w_{d}"] / 100.0
 
 
-def zeige_gewichts_slider(dims, schluessel_praefix=""):
-    """Zeichnet die Auto-Ausgleich-Slider. Anzeigename mit Umlaut."""
+def zeige_gewichts_slider(dims):
     for d in dims:
         if f"w_{d}" not in st.session_state:
             st.session_state[f"w_{d}"] = round(st.session_state.gewichte[d] * 100)
@@ -133,10 +151,7 @@ def zeige_gewichts_slider(dims, schluessel_praefix=""):
     return summe
 
 
-# ---- LLM-Aufruf fuer die textliche Szenario-Zuordnung (Phase 1) ----
 def ordne_szenario_typ_zu(nutzertext):
-    """Laesst das Modell die Freitext-Antwort einem Matrix-Typ zuordnen.
-    Gibt den Typ-Schluessel zurueck oder None."""
     typen_liste = "\n".join(f"- {t}: {SZENARIO_TYP_LABELS.get(t, t)}"
                             for t in SZENARIO_TYPEN)
     prompt = (
@@ -156,10 +171,9 @@ def ordne_szenario_typ_zu(nutzertext):
     return None
 
 
-# ---- Dialog mit dem Bot (Phasen 2, 4, 5, 7 nutzen den Chat) ----
+# ---- Dialog (Phase 4 Datenerfassung) ----
 def baue_system_prompt():
     typ = st.session_state.typ
-    phase = st.session_state.phase
     aktiv_kids = aktive_kennzahlen(MATRIX, typ)
     kennzahl_liste = ""
     for kid in aktiv_kids:
@@ -167,55 +181,62 @@ def baue_system_prompt():
         kennzahl_liste += (f"- {kid}: {m['name']} "
                            f"(Dimension {m['dimension']}, Einheit {m['einheit']}, "
                            f"Richtung {KPI_DEFS[kid].richtung})\n")
-    beschreibung = SZENARIO_BESCHREIBUNGEN.get(typ, "")
     label = SZENARIO_TYP_LABELS.get(typ, typ)
 
-    # In Phase 4 dem Bot die vorhandenen Excel-Werte mitgeben
     excel_hinweis = ""
     if EXCEL_WERTE:
         zeilen = []
         for standort, kvs in EXCEL_WERTE.items():
             relevante = {k: v for k, v in kvs.items() if k in aktiv_kids}
-            zeilen.append(f"{standort}: " +
-                          ", ".join(f"{k}={v}" for k, v in relevante.items()))
-        excel_hinweis = (
-            "\nFolgende Werte liegen bereits als Beispieldaten vor (nutze sie, "
-            "frage sie NICHT erneut ab):\n" + "\n".join(zeilen) + "\n")
+            if relevante:
+                zeilen.append(f"{standort}: " +
+                              ", ".join(f"{k}={v}" for k, v in relevante.items()))
+        if zeilen:
+            excel_hinweis = (
+                "\nFolgende Werte liegen als System-Daten (Excel) vor. Nutze sie "
+                "und kennzeichne sie als Herkunft 'system'. Frage sie NICHT erneut "
+                "ab:\n" + "\n".join(zeilen) + "\n")
 
     return f"""Du bist ein Assistent zur Entscheidungsunterstuetzung bei der \
-Konfiguration globaler Produktionsnetzwerke. Aktuelle Phase: {phase} \
-({PHASEN[phase]['titel']}).
+Konfiguration globaler Produktionsnetzwerke. Wir sind in Phase 4 (Datenabfrage).
 
-Szenario-Typ: '{label}'. Beschreibung: {beschreibung}
+Szenario-Typ: '{label}'.
 
 Fuer diesen Typ sind ausschliesslich folgende Kennzahlen relevant:
 {kennzahl_liste}{excel_hinweis}
-Verhalten je Phase:
-- Phase 2: Stelle uebersichtlich dar, welche Kennzahlen relevant sind, \
-gruppiert nach Leistungsdimension. Erklaere kurz, dann bitte den Nutzer, mit \
-'weiter' zu Phase 3 zu gehen.
-- Phase 4: Erfasse fuer MINDESTENS ZWEI Konfigurationen die Kennzahlen. Nutze \
-vorhandene Beispieldaten und frage nur fehlende Werte ab. Wenn vollstaendig, \
-rufe das Werkzeug 'berechne_nutzwerte' auf. Rechne NIEMALS selbst.
-- Phase 7: Gib eine knappe Zusammenfassung: Was wird empfohlen? Was wurde \
-beruecksichtigt (Szenario-Typ, Kennzahlen, Gewichtung)? Was sollte bei \
-weiteren Entscheidungen zusaetzlich beachtet werden?
+Deine Aufgabe in Phase 4:
+1. Erfasse fuer MINDESTENS ZWEI Konfigurationen alle oben gelisteten Kennzahlen.
+2. Werte aus den System-Daten (Excel) uebernimmst du mit Herkunft 'system'. \
+Fehlende Werte fragst du beim Nutzer ab (Herkunft 'nutzer'). Wenn der Nutzer \
+einen Wert nicht kennt und du ihn schaetzen sollst, kennzeichne ihn als \
+'schaetzung'.
+3. Mache bei jeder Antwort transparent, welche Werte aus dem System stammen \
+und welche der Nutzer eingegeben hat.
+4. Wenn fuer alle Konfigurationen alle Kennzahlen erfasst sind, rufe das \
+Werkzeug 'speichere_daten' auf (NICHT rechnen - die Berechnung erfolgt spaeter \
+in Phase 5).
 
 Antworte auf Deutsch, sachlich und knapp. Wenige Fragen gleichzeitig."""
 
 
 def tool_definitionen():
     return [{
-        "name": "berechne_nutzwerte",
-        "description": ("Berechnet die Nutzwerte aller Szenarien deterministisch. "
-                        "Verwenden, sobald alle Kennzahlen vorliegen. Nie selbst rechnen."),
+        "name": "speichere_daten",
+        "description": (
+            "Speichert die erfassten Kennzahlenwerte je Szenario inklusive "
+            "Herkunft. Aufrufen, sobald alle Werte aller Szenarien vorliegen. "
+            "NICHT rechnen - die Berechnung erfolgt separat in Phase 5."),
         "input_schema": {
             "type": "object",
             "properties": {
-                "rohwerte": {"type": "object",
-                             "description": "{Szenarioname: {kennzahl_id: Wert}}"}
+                "daten": {
+                    "type": "object",
+                    "description": (
+                        "{Szenarioname: {kennzahl_id: {\"wert\": Zahl, "
+                        "\"herkunft\": \"system\"|\"nutzer\"|\"schaetzung\"}}}"),
+                }
             },
-            "required": ["rohwerte"],
+            "required": ["daten"],
         },
     }]
 
@@ -235,15 +256,26 @@ def fuehre_dialog_runde():
             return
         ergebnisse = []
         for aufruf in tool_aufrufe:
-            if aufruf.name == "berechne_nutzwerte":
-                rohwerte = aufruf.input["rohwerte"]
-                st.session_state.letzte_rohwerte = rohwerte
-                erg = rechne(rohwerte, st.session_state.gewichte,
-                             st.session_state.typ)
-                st.session_state.letztes_ergebnis = erg
+            if aufruf.name == "speichere_daten":
+                daten = aufruf.input["daten"]
+                # Normalisieren: sicherstellen, dass jede Zelle wert+herkunft hat
+                erfasst = {}
+                for s, kvs in daten.items():
+                    erfasst[s] = {}
+                    for kid, eintrag in kvs.items():
+                        if isinstance(eintrag, dict):
+                            wert = eintrag.get("wert")
+                            herk = eintrag.get("herkunft", "nutzer")
+                        else:
+                            wert, herk = eintrag, "nutzer"
+                        if wert is not None:
+                            erfasst[s][kid] = {"wert": float(wert),
+                                               "herkunft": herk}
+                st.session_state.erfasste_daten = erfasst
                 ergebnisse.append({
                     "type": "tool_result", "tool_use_id": aufruf.id,
-                    "content": json.dumps(erg, ensure_ascii=False)})
+                    "content": "Daten gespeichert. Bitte dem Nutzer kurz "
+                               "bestaetigen und auf Phase 5 verweisen."})
         st.session_state.messages.append({"role": "user", "content": ergebnisse})
 
 
@@ -254,10 +286,9 @@ def _block_attr(b, name):
 def zeige_verlauf():
     for m in st.session_state.messages:
         if m["role"] == "user":
-            inhalt = m["content"]
-            if isinstance(inhalt, str):
+            if isinstance(m["content"], str):
                 with st.chat_message("user"):
-                    st.markdown(inhalt)
+                    st.markdown(m["content"])
         elif m["role"] == "assistant" and isinstance(m["content"], list):
             for b in m["content"]:
                 if _block_attr(b, "type") == "text":
@@ -266,7 +297,6 @@ def zeige_verlauf():
 
 
 def letzter_bot_text():
-    """Liefert den letzten reinen Bot-Text (fuer die PDF-Zusammenfassung)."""
     for m in reversed(st.session_state.messages):
         if m["role"] == "assistant" and isinstance(m["content"], list):
             texte = [_block_attr(b, "text") for b in m["content"]
@@ -276,16 +306,8 @@ def letzter_bot_text():
     return ""
 
 
-def naechste_phase():
-    if st.session_state.phase < ANZAHL_PHASEN:
-        st.session_state.phase += 1
-
-
-def bot_nachricht_anstossen(text):
-    """Sendet eine (versteckte) Nutzernachricht, um den Bot in einer Phase
-    antworten zu lassen, ohne dass der Nutzer tippen muss."""
-    st.session_state.messages.append({"role": "user", "content": text})
-    fuehre_dialog_runde()
+def gehe_zu_phase(p):
+    st.session_state.phase = p
 
 
 # =============================================================
@@ -293,20 +315,35 @@ def bot_nachricht_anstossen(text):
 # =============================================================
 for key, default in [("phase", 1), ("typ", None), ("messages", []),
                      ("gewichte", {}), ("dims", []),
-                     ("letztes_ergebnis", None), ("letzte_rohwerte", None),
-                     ("einfuehrung_gezeigt", False), ("phase2_gezeigt", False),
+                     ("erfasste_daten", None), ("letztes_ergebnis", None),
+                     ("einfuehrung_gezeigt", False),
                      ("phase4_gestartet", False), ("phase7_gezeigt", False)]:
     if key not in st.session_state:
         st.session_state[key] = default
 
 # =============================================================
-#  KOPF + PHASENANZEIGE
+#  KOPF + NAVIGIERBARE FORTSCHRITTSANZEIGE
 # =============================================================
 st.title("🏭 Entscheidungsmodell: globale Produktionsnetzwerke")
 
 with st.sidebar:
-    st.subheader("Fortschritt")
-    st.markdown(phasen_uebersicht(st.session_state.phase))
+    st.subheader("Phasen")
+    st.caption("Du kannst zu bereits erreichten Phasen zurückspringen.")
+    for i in range(1, ANZAHL_PHASEN + 1):
+        ist_aktuell = (i == st.session_state.phase)
+        # Springen nur erlaubt, wenn ein Typ gewaehlt ist (ausser Phase 1)
+        erlaubt = (i == 1) or (st.session_state.typ is not None)
+        marker = "▶️" if ist_aktuell else ("✅" if i < st.session_state.phase else "▫️")
+        label = f"{marker} {PHASEN[i]['titel']}"
+        if st.button(label, key=f"nav_{i}", disabled=not erlaubt or ist_aktuell,
+                     width="stretch"):
+            gehe_zu_phase(i)
+            st.rerun()
+    st.divider()
+    if st.button("🔁 Neue Analyse starten", width="stretch"):
+        for k in list(st.session_state.keys()):
+            st.session_state.pop(k, None)
+        st.rerun()
 
 PHASE = st.session_state.phase
 
@@ -320,10 +357,16 @@ if PHASE == 1:
 
     st.divider()
     st.subheader("Phase 1: Welche Entscheidung möchtest du untersuchen?")
+
+    if st.session_state.typ is not None:
+        st.success(f"Gewählter Szenario-Typ: "
+                   f"**{SZENARIO_TYP_LABELS.get(st.session_state.typ)}**")
+        if st.button("Weiter zu Phase 2 ▶️"):
+            gehe_zu_phase(2)
+            st.rerun()
+
     st.caption("Beschreibe in eigenen Worten, worum es geht — ich ordne es dann "
                "dem passenden Szenario-Typ zu.")
-
-    # verfuegbare Typen zur Orientierung
     with st.expander("Welche Szenario-Typen gibt es?"):
         for t in SZENARIO_TYPEN:
             st.markdown(f"- **{SZENARIO_TYP_LABELS.get(t, t)}**: "
@@ -336,24 +379,24 @@ if PHASE == 1:
             typ = ordne_szenario_typ_zu(eingabe)
         if typ is None:
             st.warning("Ich konnte das nicht eindeutig zuordnen. Bitte "
-                       "formuliere es etwas konkreter oder nenne den Typ direkt.")
+                       "formuliere es konkreter oder nenne den Typ direkt.")
         else:
             st.session_state.typ = typ
             aktiv_kids = aktive_kennzahlen(MATRIX, typ)
             dims = dimensionen_im_typ(KPI_DEFS, aktiv_kids)
             st.session_state.dims = dims
-            st.session_state.gewichte = {d: 1.0 / len(dims) for d in dims}
-            naechste_phase()
+            if not st.session_state.gewichte:
+                st.session_state.gewichte = {d: 1.0 / len(dims) for d in dims}
+            gehe_zu_phase(2)
             st.rerun()
     st.stop()
 
-# Ab hier ist ein Typ gewaehlt
 TYP = st.session_state.typ
 DIMS = st.session_state.dims
 st.caption(f"Szenario-Typ: **{SZENARIO_TYP_LABELS.get(TYP, TYP)}**")
 
 # =============================================================
-#  PHASE 2 — Relevante Kennzahlen anzeigen
+#  PHASE 2 — Kennzahlen + Dimensions-Erklaerungen
 # =============================================================
 if PHASE == 2:
     st.subheader(PHASEN[2]["titel"])
@@ -361,19 +404,21 @@ if PHASE == 2:
              "relevant, gruppiert nach Leistungsdimension:")
     gruppen = kennzahlen_nach_dimension(TYP)
     for d in DIMS:
-        kzs = gruppen.get(d, [])
-        st.markdown(f"**{dim_anzeige(d)}**")
-        for kid, name, einheit, richtung in kzs:
+        st.markdown(f"### {dim_anzeige(d)}")
+        beschr = dim_beschreibung(d)
+        if beschr:
+            st.caption(beschr)
+        for kid, name, einheit, richtung in gruppen.get(d, []):
             pfeil = "↑ höher ist besser" if richtung == "max" else "↓ niedriger ist besser"
             st.markdown(f"- {name} ({einheit}, {pfeil})")
     st.divider()
     if st.button("Weiter zu Phase 3 (Gewichtung) ▶️"):
-        naechste_phase()
+        gehe_zu_phase(3)
         st.rerun()
     st.stop()
 
 # =============================================================
-#  PHASE 3 — Gewichtung (Anfangsgewichtung)
+#  PHASE 3 — Gewichtung
 # =============================================================
 if PHASE == 3:
     st.subheader(PHASEN[3]["titel"])
@@ -383,32 +428,52 @@ if PHASE == 3:
     zeige_gewichts_slider(DIMS)
     st.divider()
     if st.button("Gewichtung übernehmen und zur Datenabfrage ▶️"):
-        naechste_phase()
+        gehe_zu_phase(4)
         st.rerun()
     st.stop()
 
 # =============================================================
-#  PHASE 4 — Datenabfrage (Chat + Excel)
+#  PHASE 4 — Datenabfrage (Chat) + Datenuebersicht (KEINE Nutzwerte)
 # =============================================================
 if PHASE == 4:
     st.subheader(PHASEN[4]["titel"])
     if EXCEL_WERTE:
-        st.caption(f"Beispieldaten geladen für: {', '.join(EXCEL_STANDORTE)}. "
+        st.caption(f"System-Daten geladen für: {', '.join(EXCEL_STANDORTE)}. "
                    "Fehlende Werte frage ich im Chat ab.")
-    if not st.session_state.phase4_gestartet:
+
+    if not st.session_state.phase4_gestartet and st.session_state.erfasste_daten is None:
         st.session_state.phase4_gestartet = True
         with st.spinner("Starte die Datenabfrage …"):
-            bot_nachricht_anstossen(
-                "Starte Phase 4. Nutze vorhandene Beispieldaten und frage "
-                "fehlende Kennzahlen ab. Beginne jetzt.")
+            st.session_state.messages.append(
+                {"role": "user",
+                 "content": "Starte Phase 4. Nutze die System-Daten und frage "
+                            "fehlende Kennzahlen ab. Beginne jetzt."})
+            fuehre_dialog_runde()
         st.rerun()
 
     zeige_verlauf()
 
-    if st.session_state.letztes_ergebnis is not None:
-        st.success("Alle Daten erfasst und berechnet.")
-        if st.button("Weiter zu Phase 5 (Berechnung ansehen) ▶️"):
-            naechste_phase()
+    # Datenuebersicht, sobald Daten erfasst sind (nur Uebersicht, keine Scores)
+    if st.session_state.erfasste_daten is not None:
+        st.divider()
+        st.markdown("### Übersicht der erfassten Daten")
+        st.caption("Diese Werte fließen in die Berechnung ein. Die Herkunft ist "
+                   "je Wert ausgewiesen. (Die Nutzwerte werden in Phase 5 berechnet.)")
+        erfasst = st.session_state.erfasste_daten
+        zeilen = []
+        for kid in aktive_kennzahlen(MATRIX, TYP):
+            zeile = {"Kennzahl": META[kid]["name"], "Einheit": META[kid]["einheit"]}
+            for s in erfasst:
+                eintrag = erfasst[s].get(kid)
+                if eintrag:
+                    zeile[s] = f"{eintrag['wert']} ({HERKUNFT_LABEL.get(eintrag['herkunft'], eintrag['herkunft'])})"
+                else:
+                    zeile[s] = "—"
+            zeilen.append(zeile)
+        st.dataframe(zeilen, width="stretch", hide_index=True)
+
+        if st.button("Weiter zu Phase 5 (Berechnung) ▶️"):
+            gehe_zu_phase(5)
             st.rerun()
     else:
         eingabe = st.chat_input("Werte eingeben oder Frage stellen …")
@@ -420,14 +485,18 @@ if PHASE == 4:
     st.stop()
 
 # =============================================================
-#  PHASE 5 — Berechnung transparent darstellen
+#  PHASE 5 — Berechnung + Ergebnis (erst hier!)
 # =============================================================
 if PHASE == 5:
     st.subheader(PHASEN[5]["titel"])
-    erg = st.session_state.letztes_ergebnis
-    if erg is None:
-        st.warning("Es liegt noch kein Ergebnis vor. Bitte zurück zu Phase 4.")
+    if st.session_state.erfasste_daten is None:
+        st.warning("Es liegen noch keine Daten vor. Bitte zuerst Phase 4 abschließen.")
         st.stop()
+
+    # Berechnung beim Betreten von Phase 5 (immer mit aktueller Gewichtung)
+    rohwerte = nur_rohwerte(st.session_state.erfasste_daten)
+    st.session_state.letztes_ergebnis = rechne(rohwerte, st.session_state.gewichte, TYP)
+    erg = st.session_state.letztes_ergebnis
 
     st.write("Die Nutzwerte wurden deterministisch berechnet: relative "
              "Min-Max-Normalisierung je Kennzahl, Mittelung je Dimension, "
@@ -437,24 +506,17 @@ if PHASE == 5:
     for d in DIMS:
         st.markdown(f"- {dim_anzeige(d)}: {erg['gewichte'][d]*100:.0f} %")
 
-    st.markdown("**Eingegangene Rohwerte:**")
-    if st.session_state.letzte_rohwerte:
-        st.dataframe(
-            [{"Szenario": s, **{META[k]["name"]: v for k, v in werte.items()}}
-             for s, werte in st.session_state.letzte_rohwerte.items()],
-            use_container_width=True, hide_index=True)
-
     st.markdown("**Ergebnis:**")
     st.dataframe(
         [{"Rang": erg["raenge"][s], "Szenario": s, "Nutzwert": nw}
          for s, nw in sorted(erg["nutzwerte"].items(),
                              key=lambda kv: kv[1], reverse=True)],
-        use_container_width=True, hide_index=True)
+        width="stretch", hide_index=True)
     st.info(f"Empfehlung nach aktueller Gewichtung: **{erg['empfehlung']}**")
 
     st.divider()
     if st.button("Weiter zu Phase 6 (Sensitivitätsanalyse) ▶️"):
-        naechste_phase()
+        gehe_zu_phase(6)
         st.rerun()
     st.stop()
 
@@ -463,15 +525,18 @@ if PHASE == 5:
 # =============================================================
 if PHASE == 6:
     st.subheader(PHASEN[6]["titel"])
+    if st.session_state.erfasste_daten is None:
+        st.warning("Es liegen noch keine Daten vor. Bitte zuerst Phase 4 abschließen.")
+        st.stop()
     st.write("Verändere die Gewichtung und beobachte, wie sich Rangfolge und "
              "Nutzwerte verschieben. So prüfst du, wie robust die Empfehlung ist.")
     zeige_gewichts_slider(DIMS)
+
+    rohwerte = nur_rohwerte(st.session_state.erfasste_daten)
     if st.button("🔄 Mit aktueller Gewichtung neu berechnen"):
-        if st.session_state.letzte_rohwerte is not None:
-            st.session_state.letztes_ergebnis = rechne(
-                st.session_state.letzte_rohwerte,
-                st.session_state.gewichte, TYP)
-            st.rerun()
+        st.session_state.letztes_ergebnis = rechne(
+            rohwerte, st.session_state.gewichte, TYP)
+        st.rerun()
 
     erg = st.session_state.letztes_ergebnis
     if erg:
@@ -480,12 +545,12 @@ if PHASE == 6:
             [{"Rang": erg["raenge"][s], "Szenario": s, "Nutzwert": nw}
              for s, nw in sorted(erg["nutzwerte"].items(),
                                  key=lambda kv: kv[1], reverse=True)],
-            use_container_width=True, hide_index=True)
+            width="stretch", hide_index=True)
         st.info(f"Empfehlung: **{erg['empfehlung']}**")
 
     st.divider()
     if st.button("Analyse abschließen und Ergebnis erstellen ▶️"):
-        naechste_phase()
+        gehe_zu_phase(7)
         st.rerun()
     st.stop()
 
@@ -495,14 +560,21 @@ if PHASE == 6:
 if PHASE == 7:
     st.subheader(PHASEN[7]["titel"])
     erg = st.session_state.letztes_ergebnis
+    if erg is None:
+        st.warning("Es liegt noch kein Ergebnis vor. Bitte Phase 5 durchlaufen.")
+        st.stop()
 
-    # Bot-Zusammenfassung einmal erzeugen
     if not st.session_state.phase7_gezeigt:
         st.session_state.phase7_gezeigt = True
         with st.spinner("Erstelle die Zusammenfassung …"):
-            bot_nachricht_anstossen(
-                "Wir sind in Phase 7. Erstelle jetzt die textliche "
-                "Abschluss-Zusammenfassung gemaess deinen Vorgaben.")
+            st.session_state.messages.append(
+                {"role": "user",
+                 "content": "Wir sind in Phase 7. Erstelle jetzt die textliche "
+                            "Abschluss-Zusammenfassung: Was wird empfohlen? Was "
+                            "wurde beruecksichtigt (Szenario-Typ, Kennzahlen, "
+                            "Gewichtung)? Was sollte bei weiteren Entscheidungen "
+                            "zusaetzlich beachtet werden?"})
+            fuehre_dialog_runde()
         st.rerun()
 
     zeige_verlauf()
@@ -515,14 +587,3 @@ if PHASE == 7:
     st.download_button("📄 Ergebnis-PDF herunterladen", data=pdf_bytes,
                        file_name="entscheidungsempfehlung.pdf",
                        mime="application/pdf")
-
-# =============================================================
-#  Neustart (immer verfuegbar)
-# =============================================================
-with st.sidebar:
-    st.divider()
-    if st.button("🔁 Neue Analyse starten"):
-        keys = list(st.session_state.keys())
-        for k in keys:
-            st.session_state.pop(k, None)
-        st.rerun()
