@@ -1,0 +1,20 @@
+dimension;kennzahl;kennzahl_id;einheit;richtung;verlagerung;lieferantenwechsel;sop_neu;make_or_buy;eop_restvolumen;referenz
+Effizienz;Kapazitätsauslastung;kapazitaetsauslastung;%;max;1;1;1;1;1;1
+Effizienz;Fertigungskosten;fertigungskosten;EUR/Stk;min;1;1;1;1;1;1
+Effizienz;Materialbestand;materialbestand;EUR;min;1;1;1;1;1;1
+Effizienz;OEE;oee;%;max;1;1;1;1;1;1
+Qualitaet;Qualitätsrate;qualitaetsrate;%;max;1;1;1;1;1;1
+Qualitaet;Reklamationsrate;reklamationsrate;%;min;1;1;1;1;1;1
+Qualitaet;Liefertermintreue;liefertermintreue;%;max;1;1;1;1;1;1
+Qualitaet;Ausschussquote;ausschussquote;%;min;1;1;1;1;1;1
+Qualitaet;Nacharbeitsquote;nacharbeitsquote;%;min;1;1;1;1;1;1
+Zeit;Durchlaufzeit;durchlaufzeit;Tage;min;1;1;1;1;1;1
+Zeit;Durchlaufzeitabweichung;durchlaufzeitabweichung;Tage;min;1;1;1;1;1;1
+Zeit;Transportzeit;transportzeit;Tage;min;1;1;1;1;1;1
+Flexibilitaet;Produktflexibilität;produktflexibilitaet;%;max;1;1;1;1;1;1
+Flexibilitaet;Losgröße;losgroesse;Stk;min;1;1;1;1;1;1
+Flexibilitaet;Volumenflexibilität;volumenflexibilitaet;%;max;1;1;1;1;1;1
+Flexibilitaet;Variantenflexibilität;variantenflexibilitaet;%;max;1;1;1;1;1;1
+Flexibilitaet;Transportvolumenflexibilität;transportvolumenflexibilitaet;%;max;1;1;1;1;1;1
+Oekologische Nachhaltigkeit;CO2-Emissionen;co2_emissionen;kg/Jahr;min;1;1;1;1;1;1
+Oekologische Nachhaltigkeit;Anteil erneuerbarer Energie;anteil_erneuerbare_energie;%;max;1;1;1;1;1;1
