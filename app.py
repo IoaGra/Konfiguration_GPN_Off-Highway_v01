@@ -289,7 +289,7 @@ def fuehre_dialog_runde():
                         if getattr(b, "type", None) == "tool_use"]
         if not tool_aufrufe:
             return
-  ergebnisse = []
+        ergebnisse = []
         for aufruf in tool_aufrufe:
             if aufruf.name == "speichere_daten":
                 daten = aufruf.input.get("daten") or {}
@@ -326,6 +326,8 @@ def fuehre_dialog_runde():
                 ergebnisse.append({
                     "type": "tool_result", "tool_use_id": aufruf.id,
                     "content": rueckmeldung})
+        st.session_state.messages.append({"role": "user", "content": ergebnisse})
+
 
 def _block_attr(b, name):
     return b.get(name) if isinstance(b, dict) else getattr(b, name, None)
