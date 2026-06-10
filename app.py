@@ -289,13 +289,17 @@ def fuehre_dialog_runde():
                         if getattr(b, "type", None) == "tool_use"]
         if not tool_aufrufe:
             return
-        ergebnisse = []
+     ergebnisse = []
         for aufruf in tool_aufrufe:
             if aufruf.name == "speichere_daten":
-                daten = aufruf.input["daten"]
-                # Normalisieren: sicherstellen, dass jede Zelle wert+herkunft hat
+                daten = aufruf.input.get("daten") or {}
+                # Normalisieren: jede Zelle soll wert+herkunft haben.
+                # OEE-Faktoren (oee_verfuegbarkeit/-leistungsgrad/-qualitaetsgrad)
+                # werden wie normale Werte mitgespeichert.
                 erfasst = {}
                 for s, kvs in daten.items():
+                    if not isinstance(kvs, dict):
+                        continue
                     erfasst[s] = {}
                     for kid, eintrag in kvs.items():
                         if isinstance(eintrag, dict):
@@ -303,14 +307,25 @@ def fuehre_dialog_runde():
                             herk = eintrag.get("herkunft", "nutzer")
                         else:
                             wert, herk = eintrag, "nutzer"
-                        if wert is not None:
-                            erfasst[s][kid] = {"wert": float(wert),
-                                               "herkunft": herk}
-                st.session_state.erfasste_daten = erfasst
+                        try:
+                            if wert is not None:
+                                erfasst[s][kid] = {"wert": float(wert),
+                                                   "herkunft": herk}
+                        except (TypeError, ValueError):
+                            continue  # unbrauchbaren Wert ueberspringen
+
+                hat_daten = any(erfasst.get(s) for s in erfasst)
+                if hat_daten:
+                    st.session_state.erfasste_daten = erfasst
+                    rueckmeldung = ("Daten gespeichert. Bitte dem Nutzer kurz "
+                                    "bestaetigen und auf Phase 5 verweisen.")
+                else:
+                    rueckmeldung = ("Es lagen noch keine vollstaendigen Werte vor. "
+                                    "Bitte frage die fehlenden Kennzahlen beim "
+                                    "Nutzer ab, bevor du erneut speicherst.")
                 ergebnisse.append({
                     "type": "tool_result", "tool_use_id": aufruf.id,
-                    "content": "Daten gespeichert. Bitte dem Nutzer kurz "
-                               "bestaetigen und auf Phase 5 verweisen."})
+                    "content": rueckmeldung})
         st.session_state.messages.append({"role": "user", "content": ergebnisse})
 
 
