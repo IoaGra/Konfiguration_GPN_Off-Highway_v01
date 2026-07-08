@@ -39,22 +39,26 @@ def lade_daten(pfad: str = "daten.xlsx"):
         return {}, [], {}, {}
 
     kopf = [str(z).strip() if z is not None else "" for z in zeilen[0]]
-    # Spalten: 0=Dimension, 1=Kennzahl, 2=Einheit, 3=Zielwert, 4=Grenzwert, 5+=Optionen
-    optionen = [kopf[i] for i in range(5, len(kopf)) if kopf[i]]
+    # Spalten: 0=Dimension, 1=Kennzahl, 2=Formelzeichen, 3=Einheit,
+    #          4=Zielwert, 5=Grenzwert, 6+=Optionen
+    optionen = [kopf[i] for i in range(6, len(kopf)) if kopf[i]]
 
     kpis, werte, fehlend = {}, {o: {} for o in optionen}, {o: [] for o in optionen}
     for z in zeilen[1:]:
         if not z or z[1] is None:
             continue
         kennzahl = str(z[1]).strip()
+        if kennzahl.lower().startswith("hinweis"):
+            continue
         kpis[kennzahl] = {
-            "dimension": str(z[0]).strip(),
-            "einheit": str(z[2]).strip() if z[2] is not None else "",
-            "zielwert": float(z[3]),
-            "grenzwert": float(z[4]),
+            "dimension": str(z[0]).strip() if z[0] is not None else "",
+            "formelzeichen": str(z[2]).strip() if z[2] is not None else "",
+            "einheit": str(z[3]).strip() if z[3] is not None else "",
+            "zielwert": float(z[4]),
+            "grenzwert": float(z[5]),
         }
         for i, opt in enumerate(optionen):
-            zelle = z[5 + i] if 5 + i < len(z) else None
+            zelle = z[6 + i] if 6 + i < len(z) else None
             if zelle is None or (isinstance(zelle, str) and zelle.strip() == FEHLEND):
                 fehlend[opt].append(kennzahl)
             else:

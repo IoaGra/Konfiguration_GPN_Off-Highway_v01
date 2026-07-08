@@ -154,11 +154,15 @@ def erstelle_ergebnis_pdf(ergebnis: dict, bot_text: str,
     story.append(Paragraph("Phase 4 — Abfrage der Daten", s["PhasenTitel"]))
     story.append(Paragraph(
         "Istwerte je Option mit Datenherkunft (S = aus System, "
-        "N = Nutzereingabe). OEE wurde aus den drei Faktoren berechnet:",
-        s["Fliess"]))
-    story.append(_formelbox(
-        "OEE = Anlagenverfügbarkeit &times; Anlageneffizienz &times; "
-        "Qualitätsgrad", s))
+        "N = Nutzereingabe). Formel-Kennzahlen wurden aus den abgefragten "
+        "Rohgrößen deterministisch berechnet:", s["Fliess"]))
+    try:
+        from formeln import FORMEL_KENNZAHLEN
+        for _name, _d in FORMEL_KENNZAHLEN.items():
+            story.append(_formelbox(_d["formel_text"]
+                                    .replace("×", "&times;"), s))
+    except ImportError:
+        pass
     kopf = ["Kennzahl", "Einheit"] + list(optionen)
     daten = [kopf]
     for k in aktive:

@@ -1,11 +1,12 @@
 """
-szenarien.py (V6)
-Beschreibungen der Szenario-Typen (Quelle: szenarien.txt).
+szenarien.py (V8)
+Beschreibungen der sechs Szenarien nach Abbildung 5.1 der Masterarbeit.
 Schluessel = Spaltennamen der Szenario-Kennzahl-Matrix.
+Schliessung/Kapazitaetsanpassung: neu formuliert, zu pruefen.
 """
 
 SZENARIO_BESCHREIBUNGEN = {
-    "Standortverlagerung": (
+    "Verlagerung der Produktion an anderen Standort": (
         "Bei einer Standortverlagerung wird die Produktion eines bestehenden "
         "Produktes von seinem aktuellen Standort an einen anderen verlagert. "
         "Typische Auslöser sind steigende Kosten am bisherigen Standort, Nähe zu "
@@ -18,7 +19,37 @@ SZENARIO_BESCHREIBUNGEN = {
         "Standort), sodass sichtbar wird, welchen Unterschied eine Verlagerung "
         "tatsächlich bewirken würde. "
     ),
-    "Lieferantenwechsel": (
+    "Eröffnung eines Produktionsstandortes": (
+        "Beim Start of Production an einem neuen Standort geht es um den Aufbau "
+        "einer Produktion für ein Produkt, das bisher an keinem Standort "
+        "gefertigt wird. Anlass ist typischerweise die Einführung eines neuen "
+        "Produktes oder die Erweiterung des Produktionsnetzwerks. Die "
+        "Entscheidungsfrage lautet: An welchem der möglichen Standorte sollte die "
+        "Produktion anlaufen? Hier werden die infrage kommenden Standorte direkt "
+        "miteinander verglichen. Anders als bei einer Verlagerung gibt es keinen "
+        "bestehenden Zustand, der als „keine Änderung\" dienen könnte – der "
+        "Vergleich findet daher ausschließlich zwischen den Standortoptionen "
+        "statt. "
+    ),
+    "Schließung eines Produktionsstandortes": (
+        "Bei der Schließung eines Produktionsstandortes entfällt ein Standort aus "
+        "dem Produktionsnetzwerk – typische Auslöser sind Überkapazitäten oder "
+        "angestrebte Skaleneffekte. Die dort gefertigte Produktion entfällt "
+        "entweder ersatzlos oder wird an andere Standorte verlagert. Die "
+        "Entscheidungsfrage lautet: Welcher Standort sollte geschlossen werden "
+        "und wie wird die betroffene Produktion behandelt? Verglichen werden die "
+        "Schließungsalternativen untereinander und gegen das Referenzszenario "
+        "(Weiterbetrieb). [Formulierung zu prüfen] "
+    ),
+    "Kapazitätsanpassung eines Standortes": (
+        "Bei der Kapazitätsanpassung wird die Kapazität eines Standortes "
+        "erweitert oder reduziert – typisch bei volatilen Stückzahlen. Die "
+        "Entscheidungsfrage lautet: An welchem Standort und in welchem Umfang "
+        "sollte die Kapazität angepasst werden? Verglichen werden die "
+        "Anpassungsalternativen untereinander und gegen das Referenzszenario "
+        "(unveränderte Kapazität). [Formulierung zu prüfen] "
+    ),
+    "Wechsel eines Lieferanten": (
         "Beim Lieferantenwechsel wird ein bestehender Lieferant durch einen "
         "anderen ersetzt. Anlass kann der Wegfall eines Lieferanten sein (etwa "
         "durch Insolvenz, Qualitätsprobleme oder geopolitische Spannungen) oder "
@@ -31,43 +62,7 @@ SZENARIO_BESCHREIBUNGEN = {
         "Zeitdruck erfolgt, ist auch das Vertrauen in die zugrunde liegenden "
         "Daten ein wichtiger Hinweis. "
     ),
-    "Start of Production (neuer Standort)": (
-        "Beim Start of Production an einem neuen Standort geht es um den Aufbau "
-        "einer Produktion für ein Produkt, das bisher an keinem Standort "
-        "gefertigt wird. Anlass ist typischerweise die Einführung eines neuen "
-        "Produktes oder die Erweiterung des Produktionsnetzwerks. Die "
-        "Entscheidungsfrage lautet: An welchem der möglichen Standorte sollte die "
-        "Produktion anlaufen? Hier werden die infrage kommenden Standorte direkt "
-        "miteinander verglichen. Anders als bei einer Verlagerung gibt es keinen "
-        "bestehenden Zustand, der als „keine Änderung\" dienen könnte – der "
-        "Vergleich findet daher ausschließlich zwischen den Standortoptionen "
-        "statt. "
-    ),
-    "Make-or-Buy": (
-        "Bei einer Make-or-Buy-Entscheidung wird abgewogen, ob eine Komponente "
-        "oder ein Produkt selbst gefertigt (Make) oder von einem externen "
-        "Anbieter bezogen werden soll (Buy). Auslöser sind etwa "
-        "Kostenüberlegungen, freie oder fehlende eigene Kapazitäten, Fragen des "
-        "Know-how-Schutzes oder die gewünschte Flexibilität. Die "
-        "Entscheidungsfrage lautet: Eigenfertigung oder Fremdbezug – und falls "
-        "Fremdbezug, über welchen Anbieter? Verglichen werden die Option der "
-        "Eigenfertigung und die Bezugsalternativen, je nach Ausgangslage auch "
-        "gegen das Referenzszenario (Beibehaltung der bisherigen Bezugs- oder "
-        "Fertigungsweise). "
-    ),
-    "End of Production / Restvolumen": (
-        "Beim End of Production läuft die Produktion eines Produktes aus. Im "
-        "Mittelpunkt steht die Frage, wie das verbleibende Restvolumen bis zum "
-        "endgültigen Auslauf behandelt wird – etwa weiterhin am bisherigen "
-        "Standort, durch Verlagerung an einen Standort mit freien Kapazitäten "
-        "oder über einen externen Bezug. Auslöser sind das Ende des "
-        "Produktlebenszyklus, Nachfolgeprodukte oder die Freigabe von "
-        "Kapazitäten. Die Entscheidungsfrage lautet: Wie wird das Restvolumen am "
-        "sinnvollsten produziert? Verglichen werden die möglichen "
-        "Auslaufstrategien untereinander und gegen das Referenzszenario "
-        "(unveränderte Weiterproduktion). "
-    ),
-    "Referenz (keine Änderung)": (
+    "Referenzszenario": (
         "Das Referenzszenario beschreibt das bestehende Setup ohne jeden Eingriff "
         "– also den aktuellen Zustand, wenn keine Entscheidung getroffen und "
         "nichts verändert wird. Es ist selbst keine eigenständige "

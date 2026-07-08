@@ -23,7 +23,9 @@ import json
 import streamlit as st
 import anthropic
 
-from berechnung import berechne_nutzwerte, oee, normiere
+from berechnung import berechne_nutzwerte, normiere
+from formeln import (FORMEL_KENNZAHLEN, berechne_formel_kennzahl,
+                     formel_hinweis_fuer_prompt)
 from daten import lade_daten, dimensionen_aus_kpis
 from matrix import lade_matrix, aktive_kennzahlen
 from szenarien import SZENARIO_BESCHREIBUNGEN
@@ -157,9 +159,9 @@ def baue_system_prompt():
             kontext += ("\nFolgende Werte FEHLEN und muessen beim Nutzer "
                         "abgefragt werden: " +
                         "; ".join(f"{o}: {', '.join(ks)}" for o, ks in offen.items()) +
-                        ". Hinweis: OEE wird aus drei Faktoren berechnet "
-                        "(Anlagenverfuegbarkeit, Anlageneffizienz, Qualitaetsgrad, "
-                        "je in %) - frage diese drei Faktoren ab.")
+                        ".\nFuer Formel-Kennzahlen frage die Faktoren ab "
+                        "(Berechnung erfolgt im Code):\n" +
+                        formel_hinweis_fuer_prompt())
         else:
             kontext += "\nAlle Werte liegen vor."
 
@@ -189,11 +191,13 @@ def baue_system_prompt():
             "gestellt."),
         4: ("Erklaere transparent: ein Teil der Daten liegt im System vor, "
             "die fehlenden fragst du jetzt ab. Frage die fehlenden Werte "
-            "gezielt und einzeln ab (siehe Kontext). Bei OEE: die drei "
-            "Faktoren. Wenn du alle fehlenden Werte hast, rufe "
-            "'speichere_fehlende_werte' auf (OEE als die drei Faktor-Felder "
-            "oee_anlagenverfuegbarkeit, oee_anlageneffizienz, "
-            "oee_qualitaetsgrad). Frage anschliessend, ob noch Werte "
+            "gezielt und einzeln ab (siehe Kontext). Bei Formel-Kennzahlen "
+            "(z.B. Kapazitaetsauslastung, Qualitaetsrate) frage die im "
+            "Kontext genannten FAKTOREN ab. Wenn du alle fehlenden Werte "
+            "hast, rufe 'speichere_fehlende_werte' auf; gib Formel-"
+            "Kennzahlen als Objekt mit den Faktor-Feldern an (z.B. "
+            "{\"Qualitätsrate\": {\"gutteile\": 98500, \"gesamtproduktion\": "
+            "100000}}). Frage anschliessend, ob noch Werte "
             "angepasst werden sollen. RECHNE NIEMALS SELBST - keine Scores, "
             "keine Normierungen, keine Mittelwerte. Alle Berechnungen "
             "erfolgen ausschliesslich im Code der Anwendung."),
@@ -294,16 +298,19 @@ def tool_definitionen():
         werkzeuge.append({
             "name": "speichere_fehlende_werte",
             "description": ("Speichert die vom Nutzer abgefragten fehlenden "
-                            "Werte. OEE als drei Faktor-Felder angeben."),
+                            "Werte. Formel-Kennzahlen als Faktor-Objekt "
+                            "angeben."),
             "input_schema": {
                 "type": "object",
                 "properties": {
                     "werte": {
                         "type": "object",
-                        "description": ('{Option: {Kennzahl: Zahl}}. Fuer OEE '
-                                        'stattdessen: oee_anlagenverfuegbarkeit, '
-                                        'oee_anlageneffizienz, oee_qualitaetsgrad '
-                                        '(je in %).'),
+                        "description": ('{Option: {Kennzahl: Zahl ODER '
+                                        'Faktor-Objekt}}. Formel-Kennzahlen '
+                                        'als Objekt mit den definierten '
+                                        'Faktor-Feldern, z.B. '
+                                        '{"Qualitätsrate": {"gutteile": 98500, '
+                                        '"gesamtproduktion": 100000}}.'),
                     }
                 },
                 "required": ["werte"],
@@ -345,26 +352,21 @@ def fuehre_werkzeug_aus(aufruf):
             if opt not in st.session_state.optionen or not isinstance(kvs, dict):
                 continue
             ziel = st.session_state.nutzer_werte.setdefault(opt, {})
-            # OEE-Faktoren zusammenfuehren
-            f1 = kvs.get("oee_anlagenverfuegbarkeit")
-            f2 = kvs.get("oee_anlageneffizienz")
-            f3 = kvs.get("oee_qualitaetsgrad")
-            if f1 is not None and f2 is not None and f3 is not None:
-                try:
-                    ziel["OEE"] = round(oee(float(f1), float(f2), float(f3)), 2)
-                    gespeichert.append(f"{opt}: OEE (aus Faktoren)")
-                except (TypeError, ValueError):
-                    pass
             for k, v in kvs.items():
-                if k.startswith("oee_"):
-                    continue
                 if k not in KPIS:
                     continue
-                try:
-                    ziel[k] = float(v)
-                    gespeichert.append(f"{opt}: {k}")
-                except (TypeError, ValueError):
-                    continue
+                if isinstance(v, dict):
+                    # Formel-Kennzahl: aus Faktoren deterministisch berechnen
+                    ergebnis = berechne_formel_kennzahl(k, v)
+                    if ergebnis is not None:
+                        ziel[k] = ergebnis
+                        gespeichert.append(f"{opt}: {k} (aus Faktoren berechnet)")
+                else:
+                    try:
+                        ziel[k] = float(v)
+                        gespeichert.append(f"{opt}: {k}")
+                    except (TypeError, ValueError):
+                        continue
         offen = offene_werte()
         if offen:
             return ("Gespeichert: " + "; ".join(gespeichert) +
@@ -548,6 +550,7 @@ if PHASE == 2 and st.session_state.typ:
     aktiv = aktive_kennzahlen(MATRIX, st.session_state.typ)
     zeilen = [{"Leistungsdimension": KPIS[k]["dimension"],
                "Kennzahl": k,
+               "Formelzeichen": KPIS[k].get("formelzeichen", ""),
                "Einheit": KPIS[k]["einheit"],
                "Zielwert": KPIS[k]["zielwert"],
                "Grenzwert": KPIS[k]["grenzwert"]} for k in aktiv]

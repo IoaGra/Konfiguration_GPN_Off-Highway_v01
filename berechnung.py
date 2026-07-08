@@ -21,21 +21,14 @@ AGGREGATION
   Nutzwert         = Summe( Gewicht_Dimension * Dimensions-Score ),
                      Gewichte auf Summe 1 renormiert.
 
-OEE (einzige Formel-Kennzahl, Quelle: kennzahlen.xlsx)
-------------------------------------------------------
-  OEE (%) = Anlagenverfuegbarkeit * Anlageneffizienz * Qualitaetsgrad
-  (Faktoren jeweils in %, Ergebnis in %)
+FORMEL-KENNZAHLEN
+-----------------
+  Kennzahlen, die aus abgefragten Rohgroessen berechnet werden, sind in
+  formeln.py definiert (z.B. Kapazitaetsauslastung, Qualitaetsrate).
 """
 
 from __future__ import annotations
 from typing import Dict
-
-
-def oee(anlagenverfuegbarkeit: float, anlageneffizienz: float,
-        qualitaetsgrad: float) -> float:
-    """OEE (%) aus drei Faktoren (jeweils in %)."""
-    return (anlagenverfuegbarkeit / 100.0) * (anlageneffizienz / 100.0) * \
-           (qualitaetsgrad / 100.0) * 100.0
 
 
 def normiere(istwert: float, zielwert: float, grenzwert: float) -> float:

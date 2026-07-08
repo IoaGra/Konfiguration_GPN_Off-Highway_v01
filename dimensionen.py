@@ -78,3 +78,7 @@ DIMENSION_BESCHREIBUNGEN = {
         "in Verbindung stehen. "
     ),
 }
+
+
+def dim_beschreibung(schluessel: str) -> str:
+    return DIMENSION_BESCHREIBUNGEN.get(schluessel, "")
