@@ -1,33 +1,35 @@
 """
-daten.py  (V6)
-==============
-Liest die Datei 'daten.xlsx' mit der vollstaendigen Datengrundlage:
+daten.py
+========
+Liest die Datei 'daten.xlsx' mit der Datengrundlage:
 
-  Leistungsdimension | Kennzahl | Einheit | Zielwert | Grenzwert | <Option 1> | <Option 2> | ...
+  Leistungsdimension | Kennzahl | Formelzeichen | Einheit | Zielwert | Grenzwert | Standort A | Standort B | ...
 
-Die Optionen (Spalten ab der sechsten) sind die im Szenario betrachtbaren
-Standorte/Auspraegungen, z.B. Warschau, Peking, Koeln, Budapest,
-'keine Aenderung'. Fehlende Werte sind mit '/' markiert und muessen vom
-Nutzer abgefragt werden.
-
-Diese Werte sind als Beispieldaten zu verstehen, die der Chatbot in der
-Praxis aus Unternehmenssystemen beziehen wuerde.
+Fehlende Werte können in der Excel-Datei mit '/', 'unbekannt' oder leeren
+Zellen markiert werden. Diese Werte werden später im Dialog abgefragt.
 """
 
 import os
 from openpyxl import load_workbook
 
-FEHLEND = "/"   # Markierung fuer fehlende Werte in daten.xlsx
+FEHLEND_MARKER = {"/", "unbekannt", "", "none", "null", "nan"}
+
+
+def _ist_fehlend(zelle) -> bool:
+    if zelle is None:
+        return True
+    if isinstance(zelle, str):
+        return zelle.strip().lower() in FEHLEND_MARKER
+    return False
 
 
 def lade_daten(pfad: str = "daten.xlsx"):
-    """Liest daten.xlsx und gibt zurueck:
+    """Liest daten.xlsx und gibt zurück:
 
-    kpis      : {kennzahl: {dimension, einheit, zielwert, grenzwert}}
-                (Reihenfolge wie in der Datei; Kennzahl-Name = Schluessel)
-    optionen  : Liste der Options-Spalten (Standorte/Auspraegungen)
+    kpis      : {kennzahl: {dimension, formelzeichen, einheit, zielwert, grenzwert}}
+    optionen  : Liste der Options-Spalten
     werte     : {option: {kennzahl: float}}   nur vorhandene Werte
-    fehlend   : {option: [kennzahl, ...]}     mit '/' markierte Luecken
+    fehlend   : {option: [kennzahl, ...]}     fehlende Werte
     """
     if not os.path.exists(pfad):
         return {}, [], {}, {}
@@ -39,17 +41,19 @@ def lade_daten(pfad: str = "daten.xlsx"):
         return {}, [], {}, {}
 
     kopf = [str(z).strip() if z is not None else "" for z in zeilen[0]]
-    # Spalten: 0=Dimension, 1=Kennzahl, 2=Formelzeichen, 3=Einheit,
-    #          4=Zielwert, 5=Grenzwert, 6+=Optionen
     optionen = [kopf[i] for i in range(6, len(kopf)) if kopf[i]]
 
-    kpis, werte, fehlend = {}, {o: {} for o in optionen}, {o: [] for o in optionen}
+    kpis = {}
+    werte = {o: {} for o in optionen}
+    fehlend = {o: [] for o in optionen}
+
     for z in zeilen[1:]:
         if not z or z[1] is None:
             continue
         kennzahl = str(z[1]).strip()
-        if kennzahl.lower().startswith("hinweis"):
+        if not kennzahl or kennzahl.lower().startswith("hinweis"):
             continue
+
         kpis[kennzahl] = {
             "dimension": str(z[0]).strip() if z[0] is not None else "",
             "formelzeichen": str(z[2]).strip() if z[2] is not None else "",
@@ -57,9 +61,10 @@ def lade_daten(pfad: str = "daten.xlsx"):
             "zielwert": float(z[4]),
             "grenzwert": float(z[5]),
         }
+
         for i, opt in enumerate(optionen):
             zelle = z[6 + i] if 6 + i < len(z) else None
-            if zelle is None or (isinstance(zelle, str) and zelle.strip() == FEHLEND):
+            if _ist_fehlend(zelle):
                 fehlend[opt].append(kennzahl)
             else:
                 try:
@@ -74,6 +79,7 @@ def dimensionen_aus_kpis(kpis: dict) -> list:
     """Dimensionen in stabiler Reihenfolge des ersten Auftretens."""
     gesehen = []
     for info in kpis.values():
-        if info["dimension"] not in gesehen:
-            gesehen.append(info["dimension"])
+        dim = info.get("dimension", "")
+        if dim and dim not in gesehen:
+            gesehen.append(dim)
     return gesehen

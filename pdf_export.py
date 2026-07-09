@@ -1,11 +1,11 @@
 """
-pdf_export.py  (V7)
-===================
-Ergebnis-PDF, gegliedert ENTLANG DER PHASEN. Je Phase: Ueberschrift, Werte
-tabellarisch, Formeln in Formelschreibweise, kurzer Text wo noetig. Am Ende
-die Zusammenfassung in Stichpunkten plus "Was noch beruecksichtigt werden
-sollte" in Stichpunkten (aus der markierten Bot-Antwort geparst; falls nicht
-vorhanden, bleiben die Abschnitte leer).
+pdf_export.py
+=============
+Ergebnis-PDF fuer den validierungsorientierten Ablauf.
+
+Die PDF dokumentiert bewusst das Basis-Ergebnis aus der initialen Gewichtung.
+Ergebnisse aus der Sensitivitaetsanalyse ueberschreiben dieses Basis-Ergebnis
+nicht; dokumentiert wird lediglich die Robustheitsbewertung des Nutzers.
 """
 
 import io
@@ -66,7 +66,6 @@ def _tabelle(daten, breiten, kopf_farbe=BLAU):
 
 
 def _formelbox(formel_html, s):
-    """Eine optisch abgesetzte Formelzeile."""
     t = Table([[Paragraph(formel_html, s["Formel"])]], colWidths=[14.6*cm])
     t.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, -1), FORMELBG),
@@ -79,10 +78,6 @@ def _formelbox(formel_html, s):
 
 
 def _parse_stichpunkte(text):
-    """Extrahiert die markierten Abschnitte 'ZUSAMMENFASSUNG:' und
-    'WEITERE BETRACHTUNG:' (Stichpunkte mit '- ') aus der Bot-Antwort.
-    Gibt (zusammenfassung_liste, weitere_liste) zurueck; leer falls nicht
-    gefunden."""
     def block(name):
         m = re.search(name + r"\s*:?\s*\n(.*?)(?=\n[A-ZÄÖÜ ]{6,}:|\Z)",
                       text, re.DOTALL | re.IGNORECASE)
@@ -99,15 +94,15 @@ def _parse_stichpunkte(text):
 
 def erstelle_ergebnis_pdf(ergebnis: dict, bot_text: str,
                           szenario_typ: str, optionen: list,
-                          kpis: dict, aktive: list) -> bytes:
-    """Baut das phasenorientierte Ergebnis-PDF."""
+                          kpis: dict, aktive: list,
+                          robustheit: dict | None = None) -> bytes:
     puffer = io.BytesIO()
     doc = SimpleDocTemplate(puffer, pagesize=A4,
                             topMargin=1.8*cm, bottomMargin=1.8*cm,
                             leftMargin=1.8*cm, rightMargin=1.8*cm)
     s = _styles()
     story = []
-    breite = 14.6  # nutzbare Breite in cm
+    breite = 14.6
 
     # ---------------- Kopf ----------------
     story.append(Paragraph("Entscheidungsempfehlung", s["TitelGross"]))
@@ -115,54 +110,53 @@ def erstelle_ergebnis_pdf(ergebnis: dict, bot_text: str,
         f"Konfiguration globaler Produktionsnetzwerke &nbsp;|&nbsp; "
         f"{datetime.now():%d.%m.%Y %H:%M}", s["Unterzeile"]))
     story.append(Paragraph(
-        f"Empfehlung: <b>{ergebnis['empfehlung']}</b> (höchster Nutzwert "
-        f"{ergebnis['nutzwerte'][ergebnis['empfehlung']]:.2f} von 100)",
+        f"Empfehlung: <b>{ergebnis['empfehlung']}</b> "
+        f"(höchster Nutzwert {ergebnis['nutzwerte'][ergebnis['empfehlung']]:.2f} von 100)",
         s["Fliess"]))
 
-    # ---------------- Phase 1: Szenario ----------------
-    story.append(Paragraph("Phase 1 — Auswahl der Szenarien", s["PhasenTitel"]))
-    daten = [["Szenario-Typ", "Verglichene Optionen"]]
-    daten.append([szenario_typ, ", ".join(optionen)])
-    story.append(_tabelle(daten, [5.5*cm, (breite-5.5)*cm]))
+    # ---------------- Phase 1 ----------------
+    story.append(Paragraph("Phase 1 — Auswahl des Szenarios", s["PhasenTitel"]))
+    story.append(_tabelle(
+        [["Szenario-Typ", "Verglichene Optionen"], [szenario_typ, ", ".join(optionen)]],
+        [5.5*cm, 9.1*cm]))
 
-    # ---------------- Phase 2: Kennzahlen ----------------
-    story.append(Paragraph("Phase 2 — Auswahl der Kennzahlen", s["PhasenTitel"]))
+    # ---------------- Phase 2 ----------------
+    story.append(Paragraph("Phase 2 — Gewichtung der Leistungsdimensionen", s["PhasenTitel"]))
     story.append(Paragraph(
-        f"Laut Szenario-Kennzahl-Matrix sind für diesen Szenario-Typ "
-        f"{len(aktive)} Kennzahlen aktiv:", s["Fliess"]))
+        "Die Leistungsdimensionen wurden initial gewichtet. Diese Gewichtung "
+        "bildet die Grundlage des dokumentierten Basis-Ergebnisses.", s["Fliess"]))
+    story.append(_formelbox(
+        "&Sigma;<sub>l</sub> g<sub>l</sub> = 1 &nbsp;&nbsp; mit &nbsp;&nbsp; "
+        "0 &le; g<sub>l</sub> &le; 1", s))
+    daten = [["Leistungsdimension", "Gewicht g_l"]]
+    for d, g in ergebnis["gewichte"].items():
+        daten.append([d, f"{g*100:.0f} %"])
+    story.append(_tabelle(daten, [10.6*cm, 4.0*cm], GRAU))
+
+    # ---------------- Phase 3 ----------------
+    story.append(Paragraph("Phase 3 — Abfrage der Daten", s["PhasenTitel"]))
+    story.append(Paragraph(
+        "Die relevanten Kennzahlen ergeben sich aus der Szenario-Kennzahl-Matrix. "
+        "Vorhandene Werte stammen aus dem System; fehlende Werte wurden durch "
+        "Nutzereingaben ergänzt.", s["Fliess"]))
+
     daten = [["Leistungsdimension", "Kennzahl", "Einheit", "Zielwert", "Grenzwert"]]
     for k in aktive:
         daten.append([kpis[k]["dimension"], k, kpis[k]["einheit"],
                       f"{kpis[k]['zielwert']:g}", f"{kpis[k]['grenzwert']:g}"])
-    story.append(_tabelle(daten, [4.2*cm, 4.8*cm, 1.8*cm, 1.9*cm, 1.9*cm]))
+    story.append(_tabelle(daten, [4.1*cm, 5.0*cm, 1.6*cm, 1.9*cm, 2.0*cm]))
 
-    # ---------------- Phase 3: Gewichtung ----------------
-    story.append(Paragraph("Phase 3 — Gewichtung der Leistungsdimensionen",
-                           s["PhasenTitel"]))
-    story.append(_formelbox(
-        "w<sub>d</sub> = w<sub>d</sub><super>roh</super> / "
-        "&Sigma;<sub>d</sub> w<sub>d</sub><super>roh</super> "
-        "&nbsp;&nbsp;&nbsp;(Renormierung der Gewichte auf &Sigma; w<sub>d</sub> = 1)",
-        s))
-    daten = [["Leistungsdimension", "Gewicht w_d"]]
-    for d, g in ergebnis["gewichte"].items():
-        daten.append([d, f"{g*100:.0f} %"])
-    story.append(_tabelle(daten, [10.6*cm, 4*cm], GRAU))
-
-    # ---------------- Phase 4: Daten ----------------
-    story.append(PageBreak())
-    story.append(Paragraph("Phase 4 — Abfrage der Daten", s["PhasenTitel"]))
-    story.append(Paragraph(
-        "Istwerte je Option mit Datenherkunft (S = aus System, "
-        "N = Nutzereingabe). Formel-Kennzahlen wurden aus den abgefragten "
-        "Rohgrößen deterministisch berechnet:", s["Fliess"]))
+    story.append(Spacer(1, 8))
     try:
-        from formeln import FORMEL_KENNZAHLEN
-        for _name, _d in FORMEL_KENNZAHLEN.items():
-            story.append(_formelbox(_d["formel_text"]
-                                    .replace("×", "&times;"), s))
+        from formeln import formel_liste_fuer_pdf
+        formeln = formel_liste_fuer_pdf()
+        if formeln:
+            story.append(Paragraph("Im Tool berechnete Formel-Kennzahlen:", s["Fliess"]))
+            for formel in formeln:
+                story.append(_formelbox(formel.replace("×", "&times;"), s))
     except ImportError:
         pass
+
     kopf = ["Kennzahl", "Einheit"] + list(optionen)
     daten = [kopf]
     for k in aktive:
@@ -174,18 +168,20 @@ def erstelle_ergebnis_pdf(ergebnis: dict, bot_text: str,
             zeile.append(f"{ist:g} ({kurz})" if ist is not None else "—")
         daten.append(zeile)
     rest = breite - 4.6 - 1.6
-    story.append(_tabelle(daten, [4.6*cm, 1.6*cm] +
-                          [rest/len(optionen)*cm]*len(optionen)))
+    story.append(_tabelle(daten, [4.6*cm, 1.6*cm] + [rest/len(optionen)*cm]*len(optionen)))
 
-    # ---------------- Phase 5: Berechnung ----------------
-    story.append(Paragraph("Phase 5 — Berechnung der Scores", s["PhasenTitel"]))
-    story.append(Paragraph("Normierung (gedeckelt auf 0–100; die Richtung "
-                           "ergibt sich aus der Lage von Ziel- zu Grenzwert):",
-                           s["Fliess"]))
+    # ---------------- Phase 4 ----------------
+    story.append(PageBreak())
+    story.append(Paragraph("Phase 4 — Berechnung der Scores", s["PhasenTitel"]))
+    story.append(Paragraph(
+        "Die Rohwerte wurden ziel- und grenzwertbasiert auf eine Skala von "
+        "0 bis 100 normalisiert. Werte außerhalb des Ziel-Grenz-Korridors "
+        "werden auf 0 bzw. 100 gedeckelt.", s["Fliess"]))
     story.append(_formelbox(
         "Normwert = (Istwert &minus; Grenzwert) / (Zielwert &minus; Grenzwert) "
         "&times; 100", s))
-    kopf = ["Kennzahl"] + [f"{o}" for o in optionen]
+
+    kopf = ["Kennzahl"] + list(optionen)
     daten = [kopf]
     for k in aktive:
         zeile = [k]
@@ -196,11 +192,10 @@ def erstelle_ergebnis_pdf(ergebnis: dict, bot_text: str,
     rest = breite - 5.4
     story.append(_tabelle(daten, [5.4*cm] + [rest/len(optionen)*cm]*len(optionen)))
 
-    story.append(Paragraph("Dimensions-Scores (Kennzahlen innerhalb einer "
-                           "Dimension gleichgewichtet):", s["Fliess"]))
+    story.append(Paragraph("Dimensions-Scores:", s["Fliess"]))
     story.append(_formelbox(
-        "D<sub>d</sub> = (1 / n<sub>d</sub>) &middot; &Sigma;<sub>k&isin;d</sub> "
-        "Normwert<sub>k</sub>", s))
+        "P<sub>s,l</sub> = (1 / n<sub>s,l</sub><super>rel</super>) &middot; "
+        "&Sigma; b<sub>s,k</sub>", s))
     dims = list(ergebnis["gewichte"].keys())
     kopf = ["Leistungsdimension"] + list(optionen)
     daten = [kopf]
@@ -211,27 +206,32 @@ def erstelle_ergebnis_pdf(ergebnis: dict, bot_text: str,
             zeile.append(f"{wert:.2f}" if wert is not None else "—")
         daten.append(zeile)
     rest = breite - 6.0
-    story.append(_tabelle(daten, [6*cm] + [rest/len(optionen)*cm]*len(optionen)))
+    story.append(_tabelle(daten, [6.0*cm] + [rest/len(optionen)*cm]*len(optionen)))
 
-    story.append(Paragraph("Nutzwert je Option:", s["Fliess"]))
+    story.append(Paragraph("Gesamtnutzwert:", s["Fliess"]))
     story.append(_formelbox(
-        "N = &Sigma;<sub>d</sub> ( w<sub>d</sub> &middot; D<sub>d</sub> )", s))
-    daten = [["Rang", "Option", "Nutzwert N (0–100)"]]
-    for o in sorted(ergebnis["nutzwerte"], key=ergebnis["nutzwerte"].get,
-                    reverse=True):
-        daten.append([str(ergebnis["raenge"][o]), o,
-                      f"{ergebnis['nutzwerte'][o]:.2f}"])
-    story.append(_tabelle(daten, [1.6*cm, 9*cm, 4*cm]))
+        "G<sub>s</sub> = &Sigma;<sub>l</sub> ( g<sub>l</sub> &middot; P<sub>s,l</sub> )", s))
+    daten = [["Rang", "Option", "Nutzwert G_s (0–100)"]]
+    for o in sorted(ergebnis["nutzwerte"], key=ergebnis["nutzwerte"].get, reverse=True):
+        daten.append([str(ergebnis["raenge"][o]), o, f"{ergebnis['nutzwerte'][o]:.2f}"])
+    story.append(_tabelle(daten, [1.6*cm, 9.0*cm, 4.0*cm]))
 
-    # ---------------- Phase 6: Sensitivitaet ----------------
-    story.append(Paragraph("Phase 6 — Sensitivitätsanalyse", s["PhasenTitel"]))
+    # ---------------- Phase 5 ----------------
+    story.append(Paragraph("Phase 5 — Sensitivitätsanalyse", s["PhasenTitel"]))
     story.append(Paragraph(
-        "Die oben ausgewiesene Gewichtung ist der nach der "
-        "Sensitivitätsanalyse final gewählte Stand; das Ergebnis bezieht "
-        "sich auf diese Gewichtung.", s["Fliess"]))
+        "In der Sensitivitätsanalyse wurde geprüft, ob die Empfehlung bei "
+        "veränderten Gewichtungen stabil bleibt. Die Nutzwerte in diesem "
+        "Dokument beziehen sich weiterhin auf die initiale Gewichtung.", s["Fliess"]))
+    if robustheit:
+        story.append(_tabelle(
+            [["Bewertung", "Begründung"],
+             [robustheit.get("bewertung", "—"), robustheit.get("begruendung", "") or "—"]],
+            [4.0*cm, 10.6*cm], GRAU))
+    else:
+        story.append(Paragraph("Robustheitsbewertung: —", s["Fliess"]))
 
-    # ---------------- Zusammenfassung (Stichpunkte) ----------------
-    story.append(Paragraph("Phase 7 — Zusammenfassung", s["PhasenTitel"]))
+    # ---------------- Phase 6 ----------------
+    story.append(Paragraph("Phase 6 — Zusammenfassung", s["PhasenTitel"]))
     zus, weitere = _parse_stichpunkte(bot_text or "")
 
     story.append(Paragraph("<b>Zusammenfassung:</b>", s["Fliess"]))
@@ -242,8 +242,7 @@ def erstelle_ergebnis_pdf(ergebnis: dict, bot_text: str,
         story.append(Paragraph("—", s["Stichpunkt"]))
 
     story.append(Spacer(1, 6))
-    story.append(Paragraph("<b>Was noch berücksichtigt werden sollte:</b>",
-                           s["Fliess"]))
+    story.append(Paragraph("<b>Was noch berücksichtigt werden sollte:</b>", s["Fliess"]))
     if weitere:
         for p in weitere:
             story.append(Paragraph(p, s["Stichpunkt"], bulletText="•"))
@@ -252,9 +251,8 @@ def erstelle_ergebnis_pdf(ergebnis: dict, bot_text: str,
 
     story.append(Spacer(1, 14))
     story.append(Paragraph(
-        "<i>Dieses Dokument wurde automatisch erstellt. Alle Werte wurden "
-        "deterministisch nach den dokumentierten Formeln im Anwendungscode "
-        "berechnet.</i>", s["Klein"]))
+        "<i>Dieses Dokument wurde automatisch erstellt. Alle Bewertungen wurden "
+        "nach den dokumentierten Formeln im Anwendungscode berechnet.</i>", s["Klein"]))
 
     doc.build(story)
     puffer.seek(0)

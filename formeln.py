@@ -1,57 +1,118 @@
 """
-formeln.py  (V8)
-================
-Kennzahlen, die im Dialog NICHT direkt, sondern ueber ihre Rohgroessen
-(Faktoren) abgefragt und anschliessend deterministisch im Code berechnet
-werden. Fuer den Use-Case "Verlagerung" sind das bewusst nur zwei einfache
-Kennzahlen (moeglichst einfach gehalten):
+formeln.py
+==========
+Formel-Kennzahlen für den Validierungs-Use-Case.
 
-  Kapazitaetsauslastung:  KA = Belegte Kapazitaet / Verfuegbare Kapazitaet x 100
-  Qualitaetsrate:         QR = Gutteile / Gesamtproduktion x 100
+Der Nutzer gibt im Validierungsdurchlauf genau drei Werte ein:
+  1) Fertigungseinzelkosten pro Produktionseinheit für Standort A
+  2) Qualitätsrate für Standort A
+  3) Gesamtenergieverbrauch für Standort B
 
-Weitere Formel-Kennzahlen koennen hier ergaenzt werden, ohne die App zu
-aendern. Die strukturellen Kennzahlen (Teileaehnlichkeit J(A,B), Abhaengige
-Baureihen je Lieferant) werden VORGELAGERT in Excel berechnet (vgl. Kapitel
-5.2 der Arbeit) und liegen als fertige Werte in daten.xlsx.
+Aus 1) werden die Fertigungskosten berechnet.
+Aus 3) wird der Anteil erneuerbarer Energie berechnet.
+Die Qualitätsrate wird direkt gespeichert und nicht über Faktoren berechnet.
+
+Wichtig:
+Die Systemparameter unten müssen zu deinem Leitfaden passen. Alternativ können
+sie über Umgebungsvariablen gesetzt werden, z. B. in Streamlit Secrets.
 """
 
+from __future__ import annotations
+import os
 
-def _ka(belegte_kapazitaet, verfuegbare_kapazitaet):
-    if not verfuegbare_kapazitaet:
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+# ---------------------------------------------------------------------------
+# Systemparameter für die Validierung
+# ---------------------------------------------------------------------------
+# Formel aus Kapitel 5:
+# K_FK = (B_FEK + B_FGK + B_SEK) / P_S
+# Da der Nutzer B_FEK bereits je Produktionseinheit eingibt, werden die
+# Gemeinkosten und Sondereinzelkosten ebenfalls als EUR/Stk hinterlegt.
+FERTIGUNGSGEMEINKOSTEN_PRO_EINHEIT = _env_float(
+    "FERTIGUNGSGEMEINKOSTEN_PRO_EINHEIT", 0.0
+)
+SONDEREINZELKOSTEN_PRO_EINHEIT = _env_float(
+    "SONDEREINZELKOSTEN_PRO_EINHEIT", 0.0
+)
+
+# Formel aus Kapitel 5:
+# K_EE = E_E / E_G * 100
+# Der Nutzer gibt E_G für Standort B ein; E_E wird als Systemwert hinterlegt.
+ERNEUERBARE_ENERGIE_STANDORT_B = _env_float(
+    "ERNEUERBARE_ENERGIE_STANDORT_B", 0.0
+)
+
+
+def _fertigungskosten(fertigungseinzelkosten_pro_einheit):
+    return (
+        fertigungseinzelkosten_pro_einheit
+        + FERTIGUNGSGEMEINKOSTEN_PRO_EINHEIT
+        + SONDEREINZELKOSTEN_PRO_EINHEIT
+    )
+
+
+def _anteil_erneuerbare_energie(gesamtenergieverbrauch):
+    if not gesamtenergieverbrauch:
         return 0.0
-    return belegte_kapazitaet / verfuegbare_kapazitaet * 100.0
+    return ERNEUERBARE_ENERGIE_STANDORT_B / gesamtenergieverbrauch * 100.0
 
 
-def _qr(gutteile, gesamtproduktion):
-    if not gesamtproduktion:
-        return 0.0
-    return gutteile / gesamtproduktion * 100.0
-
-
-# Kennzahl-Name (wie in daten.xlsx) -> Definition der Abfrage-Faktoren
 FORMEL_KENNZAHLEN = {
-    "Kapazitätsauslastung": {
+    "Fertigungskosten": {
+        "optionen": ["Standort A"],
         "faktoren": [
-            ("belegte_kapazitaet", "Belegte Kapazität [h/Jahr]"),
-            ("verfuegbare_kapazitaet", "Verfügbare Kapazität [h/Jahr]"),
+            (
+                "fertigungseinzelkosten_pro_einheit",
+                "Fertigungseinzelkosten pro Produktionseinheit [EUR/Stk]",
+            ),
         ],
-        "funktion": _ka,
-        "formel_text": "KA = Belegte Kapazität / Verfügbare Kapazität × 100",
+        "funktion": _fertigungskosten,
+        "formel_text": (
+            "K_FK = Fertigungseinzelkosten je Produktionseinheit "
+            "+ Fertigungsgemeinkosten je Produktionseinheit "
+            "+ Sondereinzelkosten je Produktionseinheit"
+        ),
     },
-    "Qualitätsrate": {
+    "Anteil erneuerbarer Energien": {
+        "optionen": ["Standort B"],
         "faktoren": [
-            ("gutteile", "Gutteile [Stk/Jahr]"),
-            ("gesamtproduktion", "Gesamtproduktion [Stk/Jahr]"),
+            (
+                "gesamtenergieverbrauch",
+                "Gesamtenergieverbrauch Standort B [z. B. kWh/Jahr]",
+            ),
         ],
-        "funktion": _qr,
-        "formel_text": "QR = Gutteile / Gesamtproduktion × 100",
+        "funktion": _anteil_erneuerbare_energie,
+        "formel_text": "K_EE = Erneuerbare Energie / Gesamtenergieverbrauch × 100",
     },
 }
 
 
+DIREKT_ABZUFRAGEN = {
+    "Qualitätsrate": {
+        "optionen": ["Standort A"],
+        "beschreibung": "Qualitätsrate Standort A [%]",
+    }
+}
+
+
+def ist_formel_kennzahl(kennzahl: str, option: str | None = None) -> bool:
+    definition = FORMEL_KENNZAHLEN.get(kennzahl)
+    if not definition:
+        return False
+    return option is None or option in definition.get("optionen", [])
+
+
 def berechne_formel_kennzahl(kennzahl: str, faktoren: dict):
     """Berechnet eine Formel-Kennzahl aus einem Faktoren-Dict.
-    Gibt None zurueck, wenn die Kennzahl unbekannt ist oder Faktoren fehlen."""
+    Gibt None zurück, wenn die Kennzahl unbekannt ist oder Faktoren fehlen.
+    """
     definition = FORMEL_KENNZAHLEN.get(kennzahl)
     if not definition:
         return None
@@ -67,11 +128,26 @@ def berechne_formel_kennzahl(kennzahl: str, faktoren: dict):
     return round(definition["funktion"](*werte), 2)
 
 
-def formel_hinweis_fuer_prompt() -> str:
-    """Kompakte Beschreibung der Formel-Kennzahlen fuer den System-Prompt."""
+def formel_hinweis_fuer_prompt(offene: dict | None = None) -> str:
+    """Kompakte Beschreibung der fehlenden Werte für den System-Prompt."""
     teile = []
-    for name, d in FORMEL_KENNZAHLEN.items():
-        faktoren = ", ".join(f"'{s}' ({b})" for s, b in d["faktoren"])
-        teile.append(f"- {name}: Frage die Faktoren {faktoren} ab. "
-                     f"Formel: {d['formel_text']} (Berechnung im Code).")
+    offene = offene or {}
+    for option, kennzahlen in offene.items():
+        for name in kennzahlen:
+            if ist_formel_kennzahl(name, option):
+                d = FORMEL_KENNZAHLEN[name]
+                faktoren = ", ".join(f"'{s}' ({b})" for s, b in d["faktoren"])
+                teile.append(
+                    f"- {option} / {name}: Frage die Faktoren {faktoren} ab. "
+                    f"Formel: {d['formel_text']} (Berechnung im Code)."
+                )
+            elif name in DIREKT_ABZUFRAGEN:
+                beschr = DIREKT_ABZUFRAGEN[name]["beschreibung"]
+                teile.append(f"- {option} / {name}: Frage direkt ab: {beschr}.")
+            else:
+                teile.append(f"- {option} / {name}: Frage den Istwert direkt ab.")
     return "\n".join(teile)
+
+
+def formel_liste_fuer_pdf() -> list[str]:
+    return [d["formel_text"] for d in FORMEL_KENNZAHLEN.values()]
