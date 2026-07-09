@@ -1,20 +1,20 @@
 """
 formeln.py
 ==========
-Formel-Kennzahlen für den Validierungs-Use-Case.
+Formel-Kennzahlen fuer den Validierungs-Use-Case.
 
-Der Nutzer gibt im Validierungsdurchlauf genau drei Werte ein:
-  1) Fertigungseinzelkosten pro Produktionseinheit für Standort A
-  2) Qualitätsrate für Standort A
-  3) Gesamtenergieverbrauch für Standort B
+Der Chatbot fragt im Validierungsdurchlauf genau drei fehlende Werte ab:
+  1) Fertigungseinzelkosten pro Produktionseinheit fuer Standort A
+  2) Qualitaetsrate fuer Standort A
+  3) Gesamtenergieverbrauch fuer Standort B
 
 Aus 1) werden die Fertigungskosten berechnet.
 Aus 3) wird der Anteil erneuerbarer Energie berechnet.
-Die Qualitätsrate wird direkt gespeichert und nicht über Faktoren berechnet.
+Die Qualitaetsrate wird direkt gespeichert und nicht ueber Faktoren berechnet.
 
-Wichtig:
-Die Systemparameter unten müssen zu deinem Leitfaden passen. Alternativ können
-sie über Umgebungsvariablen gesetzt werden, z. B. in Streamlit Secrets.
+Wichtig: Die Werte aus dem Validierungsleitfaden sind NICHT im Code hinterlegt.
+Im Code liegen nur systemseitige Rechengroessen, die der Chatbot zur Berechnung
+fehlender Kennzahlen ergaenzt.
 """
 
 from __future__ import annotations
@@ -28,34 +28,49 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _fmt_zahl(wert) -> str:
+    try:
+        f = float(wert)
+    except (TypeError, ValueError):
+        return str(wert)
+    if f.is_integer():
+        return f"{int(f):,}".replace(",", ".")
+    return f"{f:g}".replace(".", ",")
+
+
 # ---------------------------------------------------------------------------
-# Systemparameter für die Validierung
+# Systemparameter fuer die Validierung
 # ---------------------------------------------------------------------------
 # Formel aus Kapitel 5:
 # K_FK = (B_FEK + B_FGK + B_SEK) / P_S
-# Da der Nutzer B_FEK bereits je Produktionseinheit eingibt, werden die
-# Gemeinkosten und Sondereinzelkosten ebenfalls als EUR/Stk hinterlegt.
+# Im Validierungsfall gibt der Nutzer B_FEK als EUR/Stk ein. Die hinterlegten
+# Gemein- und Sondereinzelkosten beziehen sich ebenfalls auf EUR/Stk.
+# Damit die vorhandenen Ziel-/Grenzwerte der Datengrundlage im Wertebereich
+# 40 bis 60 interpretierbar bleiben, wird der KPI in Tsd. EUR/Stk ausgegeben.
+KOSTEN_SKALIERUNG = _env_float("KOSTEN_SKALIERUNG", 1000.0)
 FERTIGUNGSGEMEINKOSTEN_PRO_EINHEIT = _env_float(
-    "FERTIGUNGSGEMEINKOSTEN_PRO_EINHEIT", 0.0
+    "FERTIGUNGSGEMEINKOSTEN_PRO_EINHEIT", 6_000.0
 )
 SONDEREINZELKOSTEN_PRO_EINHEIT = _env_float(
-    "SONDEREINZELKOSTEN_PRO_EINHEIT", 0.0
+    "SONDEREINZELKOSTEN_PRO_EINHEIT", 2_000.0
 )
 
 # Formel aus Kapitel 5:
 # K_EE = E_E / E_G * 100
-# Der Nutzer gibt E_G für Standort B ein; E_E wird als Systemwert hinterlegt.
+# Der Nutzer gibt E_G fuer Standort B ein; E_E wird als Systemwert hinterlegt.
 ERNEUERBARE_ENERGIE_STANDORT_B = _env_float(
-    "ERNEUERBARE_ENERGIE_STANDORT_B", 0.0
+    "ERNEUERBARE_ENERGIE_STANDORT_B", 4_800_000.0
 )
 
 
 def _fertigungskosten(fertigungseinzelkosten_pro_einheit):
+    if not KOSTEN_SKALIERUNG:
+        return 0.0
     return (
         fertigungseinzelkosten_pro_einheit
         + FERTIGUNGSGEMEINKOSTEN_PRO_EINHEIT
         + SONDEREINZELKOSTEN_PRO_EINHEIT
-    )
+    ) / KOSTEN_SKALIERUNG
 
 
 def _anteil_erneuerbare_energie(gesamtenergieverbrauch):
@@ -75,9 +90,12 @@ FORMEL_KENNZAHLEN = {
         ],
         "funktion": _fertigungskosten,
         "formel_text": (
-            "K_FK = Fertigungseinzelkosten je Produktionseinheit "
-            "+ Fertigungsgemeinkosten je Produktionseinheit "
-            "+ Sondereinzelkosten je Produktionseinheit"
+            "K_FK = (B_FEK + B_FGK + B_SEK) / 1000"
+            "  (Eingabe in EUR/Stk; KPI-Ausgabe in Tsd. EUR/Stk)"
+        ),
+        "systemwerte_text": (
+            f"B_FGK = {_fmt_zahl(FERTIGUNGSGEMEINKOSTEN_PRO_EINHEIT)} EUR/Stk; "
+            f"B_SEK = {_fmt_zahl(SONDEREINZELKOSTEN_PRO_EINHEIT)} EUR/Stk"
         ),
     },
     "Anteil erneuerbarer Energien": {
@@ -85,11 +103,14 @@ FORMEL_KENNZAHLEN = {
         "faktoren": [
             (
                 "gesamtenergieverbrauch",
-                "Gesamtenergieverbrauch Standort B [z. B. kWh/Jahr]",
+                "Gesamtenergieverbrauch Standort B [kWh/Jahr]",
             ),
         ],
         "funktion": _anteil_erneuerbare_energie,
-        "formel_text": "K_EE = Erneuerbare Energie / Gesamtenergieverbrauch × 100",
+        "formel_text": "K_EE = E_E / E_G × 100",
+        "systemwerte_text": (
+            f"E_E = {_fmt_zahl(ERNEUERBARE_ENERGIE_STANDORT_B)} kWh/Jahr"
+        ),
     },
 }
 
@@ -111,7 +132,7 @@ def ist_formel_kennzahl(kennzahl: str, option: str | None = None) -> bool:
 
 def berechne_formel_kennzahl(kennzahl: str, faktoren: dict):
     """Berechnet eine Formel-Kennzahl aus einem Faktoren-Dict.
-    Gibt None zurück, wenn die Kennzahl unbekannt ist oder Faktoren fehlen.
+    Gibt None zurueck, wenn die Kennzahl unbekannt ist oder Faktoren fehlen.
     """
     definition = FORMEL_KENNZAHLEN.get(kennzahl)
     if not definition:
@@ -129,7 +150,11 @@ def berechne_formel_kennzahl(kennzahl: str, faktoren: dict):
 
 
 def formel_hinweis_fuer_prompt(offene: dict | None = None) -> str:
-    """Kompakte Beschreibung der fehlenden Werte für den System-Prompt."""
+    """Kompakte Beschreibung der fehlenden Werte fuer den System-Prompt.
+
+    Enthält keine Leitfadenwerte. Der Nutzer muss die Werte aus
+    seinem externen Leitfaden eingeben.
+    """
     teile = []
     offene = offene or {}
     for option, kennzahlen in offene.items():
@@ -139,11 +164,11 @@ def formel_hinweis_fuer_prompt(offene: dict | None = None) -> str:
                 faktoren = ", ".join(f"'{s}' ({b})" for s, b in d["faktoren"])
                 teile.append(
                     f"- {option} / {name}: Frage die Faktoren {faktoren} ab. "
-                    f"Formel: {d['formel_text']} (Berechnung im Code)."
+                    f"Formel: {d['formel_text']} (Berechnung im Code; Systemwerte sind hinterlegt)."
                 )
             elif name in DIREKT_ABZUFRAGEN:
-                beschr = DIREKT_ABZUFRAGEN[name]["beschreibung"]
-                teile.append(f"- {option} / {name}: Frage direkt ab: {beschr}.")
+                d = DIREKT_ABZUFRAGEN[name]
+                teile.append(f"- {option} / {name}: Frage direkt ab: {d['beschreibung']}.")
             else:
                 teile.append(f"- {option} / {name}: Frage den Istwert direkt ab.")
     return "\n".join(teile)
@@ -151,3 +176,32 @@ def formel_hinweis_fuer_prompt(offene: dict | None = None) -> str:
 
 def formel_liste_fuer_pdf() -> list[str]:
     return [d["formel_text"] for d in FORMEL_KENNZAHLEN.values()]
+
+
+def formel_beispiele_fuer_ui() -> list[dict]:
+    """Strukturierte Formeln und Eingabehinweise fuer Streamlit/PDF.
+
+    Der Funktionsname bleibt aus Kompatibilitaetsgruenden erhalten. Die
+    Rueckgabe enthält bewusst keine Leitfadenwerte.
+    """
+    zeilen = []
+    for name, d in FORMEL_KENNZAHLEN.items():
+        faktor_text = "; ".join(label for _, label in d.get("faktoren", []))
+        optionen = ", ".join(d.get("optionen", []))
+        zeilen.append({
+            "Kennzahl": name,
+            "Option": optionen,
+            "Benötigte Nutzereingabe": faktor_text,
+            "Formel": d.get("formel_text", ""),
+            "Systemseitige Rechengrößen": d.get("systemwerte_text", ""),
+        })
+    for name, d in DIREKT_ABZUFRAGEN.items():
+        optionen = ", ".join(d.get("optionen", []))
+        zeilen.append({
+            "Kennzahl": name,
+            "Option": optionen,
+            "Benötigte Nutzereingabe": d.get("beschreibung", ""),
+            "Formel": "Direkte Nutzereingabe",
+            "Systemseitige Rechengrößen": "—",
+        })
+    return zeilen

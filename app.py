@@ -17,7 +17,7 @@ import anthropic
 
 from berechnung import berechne_nutzwerte
 from formeln import (berechne_formel_kennzahl, formel_hinweis_fuer_prompt,
-                     ist_formel_kennzahl)
+                     ist_formel_kennzahl, formel_beispiele_fuer_ui)
 from daten import lade_daten, dimensionen_aus_kpis
 from matrix import lade_matrix, aktive_kennzahlen
 from szenarien import SZENARIO_BESCHREIBUNGEN
@@ -31,9 +31,17 @@ from pdf_export import erstelle_ergebnis_pdf
 # Anthropic API-ID fuer Claude Opus. Bei Bedarf in Streamlit Secrets
 # mit CLAUDE_MODEL ueberschreiben.
 MODELL = st.secrets.get("CLAUDE_MODEL", "claude-opus-4-8")
-MAX_TOKENS = 1100
+MAX_TOKENS = 900
 HERKUNFT_LABEL = {"system": "aus System", "nutzer": "Nutzereingabe"}
 AUTO_MARKER = "[AUTO]"
+
+DEFAULT_GEWICHTE = {
+    "Effizienz": 0.20,
+    "Qualität": 0.20,
+    "Zeit": 0.20,
+    "Flexibilität": 0.20,
+    "Ökologische Nachhaltigkeit": 0.20,
+}
 
 st.set_page_config(page_title="Entscheidungsmodell Produktionsnetzwerke",
                    page_icon="🏭", layout="wide")
@@ -146,6 +154,15 @@ def setze_slider_aus_gewichten(gewichte):
         st.session_state[f"w_{d}"] = round(gewichte.get(d, 0) * 100)
 
 
+def initiale_gewichte():
+    """Initiale Gewichtung fuer den Validierungs-Use-Case."""
+    vorhandene = {d: DEFAULT_GEWICHTE.get(d, 0.0) for d in ALLE_DIMENSIONEN}
+    summe = sum(vorhandene.values())
+    if summe <= 0:
+        return {d: 1.0 / len(ALLE_DIMENSIONEN) for d in ALLE_DIMENSIONEN}
+    return {d: vorhandene[d] / summe for d in ALLE_DIMENSIONEN}
+
+
 def _block_attr(b, name):
     return b.get(name) if isinstance(b, dict) else getattr(b, name, None)
 
@@ -184,7 +201,7 @@ def _kompakte_beschreibungen():
     """Tokenarme Beschreibungen nur fuer Phasen, in denen Nachfragen
     wahrscheinlich sind.
     """
-    if st.session_state.phase > 2:
+    if st.session_state.phase not in (1, 2):
         return ""
     return (
         "\nKurzbeschreibungen Szenarien: "
@@ -200,6 +217,7 @@ def baue_system_prompt():
 
     szenario_namen = ", ".join(SZENARIO_TYPEN)
     options_namen = ", ".join(ALLE_OPTIONEN)
+    optionen_zeile = "" if phase == 1 else f"\nVerfuegbare Optionen: {options_namen}"
     dims = ", ".join(ALLE_DIMENSIONEN)
 
     kontext = ""
@@ -272,11 +290,14 @@ def baue_system_prompt():
             "ob es losgehen kann. Wenn der Nutzer zustimmt, rufe naechste_phase auf."
         ),
         1: (
-            "Nenne die verfuegbaren Szenario-Typen nur mit Namen. Der Nutzer "
-            "muss einen Typ und mindestens zwei Optionen waehlen. Fuer die "
-            "Validierung ist vorgesehen: 'Verlagerung der Produktion an anderen "
-            "Standort' mit Standort A und Standort B. Wenn Typ und Optionen klar "
-            "sind, rufe setze_szenarien auf."
+            "Nenne zu Beginn nur die verfuegbaren Szenario-Typen mit Namen. "
+            "Zeige die verfuegbaren Optionen noch nicht. Erst nachdem der Nutzer "
+            "einen Szenario-Typ gewaehlt hat, nenne die verfuegbaren Optionen "
+            f"({options_namen}) und frage, welche mindestens zwei Optionen "
+            "verglichen werden sollen. Fuer die Validierung ist vorgesehen: "
+            "'Verlagerung der Produktion an anderen Standort' mit Standort A "
+            "und Standort B. Wenn Typ und Optionen klar sind, rufe "
+            "setze_szenarien auf."
         ),
         2: (
             "Die Gewichtung erfolgt ueber Schieberegler in der App. Erklaere "
@@ -288,7 +309,9 @@ def baue_system_prompt():
             "liegen bereits im System vor, die restlichen Werte benoetigst du "
             "vom Nutzer. Nenne einmal kompakt, welche Kennzahlen fuer das "
             "Szenario relevant sind. Frage die fehlenden Werte anschliessend "
-            "schrittweise ab. Bei Formel-Kennzahlen frage nur die angegebenen "
+            "schrittweise ab. Die Werte aus dem Validierungsleitfaden sind "
+            "nicht im Code hinterlegt und muessen vom Nutzer eingegeben werden. "
+            "Bei Formel-Kennzahlen frage nur die angegebenen "
             "Faktoren ab und rufe speichere_fehlende_werte auf. Rechne niemals "
             "selbst. Wenn alle Werte vorliegen und der Nutzer bereit ist, rufe "
             "naechste_phase auf."
@@ -305,20 +328,22 @@ def baue_system_prompt():
             "Einschaetzung vorliegt, rufe speichere_robustheit auf."
         ),
         6: (
-            "Erstelle die Abschluss-Zusammenfassung entlang der Phasen: Szenario "
-            "und Optionen, relevante Kennzahlen, initiale Gewichtung, Datenherkunft, "
-            "Normierungsformel, Dimensions-Scores, Nutzwerte, Empfehlung und "
-            "Robustheitsbewertung. Nutze nur Zahlen aus dem Kontext. Beende deine "
-            "Antwort zwingend mit den Abschnitten:\n"
-            "ZUSAMMENFASSUNG:\n- ...\n"
-            "WEITERE BETRACHTUNG:\n- ..."
+            "Erstelle eine aussagekraeftige Abschluss-Zusammenfassung entlang "
+            "der Phasen. Erklaere insbesondere, warum die Empfehlung zustande "
+            "kommt: nenne die wichtigsten Dimensions-Scores, auffaellige "
+            "Normwerte und Nutzwertunterschiede zwischen den Optionen. Nutze "
+            "nur Zahlen aus dem Kontext. Beende deine Antwort zwingend mit den "
+            "Abschnitten:\n"
+            "ZUSAMMENFASSUNG:\n- 4 bis 6 ausfuehrliche Stichpunkte mit konkreten Werten.\n"
+            "WEITERE BETRACHTUNG:\n- Beruecksichtige beim Verlagerungsszenario ausdruecklich, dass die "
+            "Verlagerung auch Auswirkungen auf den Ursprungsstandort hat.\n"
+            "- ..."
         ),
     }[phase]
 
     return f"""Du bist ein Entscheidungsassistent fuer die Konfiguration globaler Produktionsnetzwerke in der Off-Highway-Motorenbranche.
 
-Verfuegbare Szenario-Typen: {szenario_namen}
-Verfuegbare Optionen: {options_namen}
+Verfuegbare Szenario-Typen: {szenario_namen}{optionen_zeile}
 Leistungsdimensionen: {dims}
 
 Regeln:
@@ -326,6 +351,7 @@ Regeln:
 - Du berechnest keine Scores, Nutzwerte, Normierungen, Mittelwerte oder Rankings selbst.
 - Bleibe in der aktuellen Phase und fuehre den Nutzer knapp und dialogorientiert.
 - Erklaere Szenarien und Leistungsdimensionen nur auf Nachfrage.
+- In Phase 1 duerfen die verfuegbaren Optionen erst genannt werden, nachdem der Nutzer einen Szenario-Typ gewaehlt hat.
 - Frage fehlende Informationen gezielt und schrittweise ab.
 - Antworte auf Deutsch.
 
@@ -409,7 +435,8 @@ def fuehre_werkzeug_aus(aufruf):
             return f"Mindestens zwei gueltige Optionen noetig. Verfuegbar: {', '.join(ALLE_OPTIONEN)}."
         st.session_state.typ = typ
         st.session_state.optionen = gueltige
-        st.session_state.gewichte = {d: 1.0 / len(ALLE_DIMENSIONEN) for d in ALLE_DIMENSIONEN}
+        st.session_state.gewichte = initiale_gewichte()
+        setze_slider_aus_gewichten(st.session_state.gewichte)
         st.session_state.basis_ergebnis = None
         st.session_state.sensitivitaet_ergebnis = None
         st.session_state.robustheit = None
@@ -620,6 +647,12 @@ if PHASE == 3:
         "Die Tabelle zeigt dir transparent, welche Werte bereits vorliegen und "
         "welche noch ergänzt werden müssen."
     )
+    st.markdown("**Formeln und benötigte Eingaben:**")
+    st.dataframe(formel_beispiele_fuer_ui(), width="stretch", hide_index=True)
+    st.caption(
+        "Die Werte aus dem Validierungsleitfaden sind nicht im Chatbot hinterlegt. "
+        "Bitte gib die fehlenden Werte im Chat ein; die Berechnung erfolgt anschließend deterministisch im Anwendungscode."
+    )
     rohwerte, herkunft = baue_rohwerte()
     aktiv = aktive_kennzahlen(MATRIX, st.session_state.typ)
     zeilen = []
@@ -648,9 +681,12 @@ if PHASE == 4:
     erg = st.session_state.basis_ergebnis
 
     st.markdown(
-        "**Normierungsformel:** Normwert = (Istwert − Grenzwert) / "
-        "(Zielwert − Grenzwert) × 100, gedeckelt auf 0–100. "
-        "Die Richtung ergibt sich automatisch aus der Lage von Ziel- zu Grenzwert."
+        "**Normierung:** Die Berechnung unterscheidet die Wirkungsrichtung über "
+        "die Lage von Ziel- und Grenzwert. Ist der Zielwert größer als der "
+        "Grenzwert, sind höhere Werte besser. Ist der Zielwert kleiner als der "
+        "Grenzwert, sind niedrigere Werte besser. Rechnerisch wird dies durch "
+        "dieselbe Formel abgebildet: Normwert = (Istwert − Grenzwert) / "
+        "(Zielwert − Grenzwert) × 100, gedeckelt auf 0–100."
     )
 
     st.markdown("**Normwerte je Kennzahl (0–100):**")
