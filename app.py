@@ -12,6 +12,8 @@
 # =============================================================
 
 import json
+import re
+from html import escape
 from typing import Optional
 
 import anthropic
@@ -146,7 +148,7 @@ st.markdown(
         opacity: 0.62 !important;
     }
 
-    /* Eingabefeld und Hintergrund bilden eine einheitliche Flaeche. */
+    /* Eingabefeld: eine einzige abgerundete Flaeche ohne sichtbare Ecken. */
     [data-testid="stBottom"],
     [data-testid="stBottom"] > div,
     [data-testid="stBottomBlockContainer"] {
@@ -158,28 +160,36 @@ st.markdown(
         margin: 0 auto !important;
     }
 
-    [data-testid="stChatInput"],
-    [data-testid="stChatInput"] > div,
-    [data-baseweb="textarea"],
-    [data-baseweb="textarea"] > div {
-        background: var(--surface) !important;
-        background-color: var(--surface) !important;
+    [data-testid="stChatInput"] {
+        background: transparent !important;
+        border: 0 !important;
+        border-radius: 24px !important;
+        box-shadow: none !important;
+        overflow: visible !important;
     }
 
     [data-testid="stChatInput"] > div {
+        background: var(--surface) !important;
         border: 1px solid var(--border) !important;
-        border-radius: 18px !important;
+        border-radius: 24px !important;
         box-shadow: none !important;
+        overflow: hidden !important;
     }
 
     [data-testid="stChatInput"] > div:focus-within {
         border-color: var(--accent) !important;
     }
 
+    [data-testid="stChatInput"] [data-baseweb="textarea"],
+    [data-testid="stChatInput"] [data-baseweb="textarea"] > div,
     [data-testid="stChatInput"] textarea,
     [data-testid="stChatInput"] input {
-        color: var(--text) !important;
         background: var(--surface) !important;
+        background-color: var(--surface) !important;
+        border: 0 !important;
+        border-radius: 24px !important;
+        box-shadow: none !important;
+        color: var(--text) !important;
         caret-color: var(--text) !important;
     }
 
@@ -190,17 +200,85 @@ st.markdown(
     }
 
     [data-testid="stChatInput"] button {
-        background: var(--surface) !important;
+        background: transparent !important;
+        border: 0 !important;
         color: var(--text) !important;
     }
 
-    [data-testid="stDataFrame"],
-    [data-testid="stTable"] {
+    .app-table-wrapper {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        margin: 0.8rem auto 1.2rem auto;
+    }
+
+    .app-table-shell {
+        max-width: 100%;
         border: 1px solid var(--border);
         border-radius: 10px;
         overflow: hidden;
-        margin-left: auto !important;
-        margin-right: auto !important;
+        background: var(--surface);
+    }
+
+    table.app-table {
+        width: auto;
+        max-width: 100%;
+        border-collapse: collapse;
+        table-layout: auto;
+        margin: 0 auto;
+        color: var(--text);
+        background: var(--surface);
+        font-size: clamp(0.76rem, 1.05vw, 0.92rem);
+    }
+
+    table.app-table th {
+        background: #17365d;
+        color: #ffffff !important;
+        font-weight: 650;
+        text-align: left;
+        padding: 0.62rem 0.72rem;
+        border-right: 1px solid #31557f;
+        border-bottom: 1px solid #31557f;
+        white-space: normal;
+        overflow-wrap: anywhere;
+    }
+
+    table.app-table td {
+        background: var(--surface);
+        color: #ffffff !important;
+        padding: 0.58rem 0.72rem;
+        border-right: 1px solid var(--border);
+        border-bottom: 1px solid var(--border);
+        vertical-align: top;
+        white-space: normal;
+        overflow-wrap: anywhere;
+        word-break: normal;
+    }
+
+    table.app-table th:last-child,
+    table.app-table td:last-child {
+        border-right: 0;
+    }
+
+    table.app-table tr:last-child td {
+        border-bottom: 0;
+    }
+
+    table.app-table .narrow-column {
+        width: 3.25rem;
+        min-width: 3.25rem;
+        max-width: 3.25rem;
+        text-align: center;
+    }
+
+    table.app-table .numeric-cell {
+        text-align: right;
+        white-space: nowrap;
+    }
+
+    table.app-table .missing-cell {
+        color: var(--danger) !important;
+        font-weight: 700;
     }
 
     [data-testid="stAlert"] {
@@ -420,17 +498,51 @@ def datenuebersicht():
 
 
 def formatierte_datenuebersicht():
-    """Markiert fehlende Werte in der Datenübersicht deutlich in Rot."""
-    df = pd.DataFrame(datenuebersicht())
-    if df.empty:
-        return df
+    """Gibt die Datenübersicht ohne scrollbaren DataFrame zurück."""
+    return datenuebersicht()
 
-    def _markiere_fehlend(wert):
-        if str(wert).strip() == "Fehlender Wert":
-            return "color: #ff4b4b; font-weight: 700;"
-        return ""
 
-    return df.style.map(_markiere_fehlend)
+def _tabellenzeilen(daten):
+    """Normalisiert Listen, DataFrames und Styler für die HTML-Ausgabe."""
+    if daten is None:
+        return [], []
+
+    if hasattr(daten, "data") and isinstance(getattr(daten, "data"), pd.DataFrame):
+        daten = daten.data
+
+    if isinstance(daten, pd.DataFrame):
+        if daten.empty:
+            return [], []
+        spalten = [str(c) for c in daten.columns]
+        zeilen = daten.to_dict(orient="records")
+        return spalten, zeilen
+
+    if isinstance(daten, dict):
+        daten = [daten]
+
+    daten = list(daten)
+    if not daten:
+        return [], []
+
+    if isinstance(daten[0], dict):
+        spalten = list(daten[0].keys())
+        for zeile in daten[1:]:
+            for spalte in zeile.keys():
+                if spalte not in spalten:
+                    spalten.append(spalte)
+        return [str(c) for c in spalten], daten
+
+    spalten = [str(i + 1) for i in range(len(daten[0]))]
+    zeilen = [dict(zip(spalten, zeile)) for zeile in daten]
+    return spalten, zeilen
+
+
+def _tabellenwert(wert):
+    if wert is None:
+        return "—"
+    if isinstance(wert, float):
+        return f"{wert:.2f}".rstrip("0").rstrip(".").replace(".", ",")
+    return str(wert)
 
 
 def zeige_tabelle_zentriert(
@@ -440,23 +552,198 @@ def zeige_tabelle_zentriert(
     hide_index=True,
     column_config=None,
 ):
-    """Zeigt Tabellen in einer mittig ausgerichteten Inhaltsspalte.
+    """Zeigt eine vollständig sichtbare, einheitlich gestaltete HTML-Tabelle.
 
-    breite="schmal" eignet sich insbesondere fuer zweispaltige Auswahltabellen.
+    Die Tabelle besitzt keinen eigenen Scrollbereich. Lange Inhalte werden
+    umgebrochen und die Tabelle wird mittig im verfügbaren Fenster platziert.
     """
-    verhältnis = [1.5, 7, 1.5] if breite == "schmal" else [0.6, 8.8, 0.6]
-    links, mitte, rechts = st.columns(verhältnis)
-    with mitte:
-        st.dataframe(
-            daten,
-            width="stretch",
-            hide_index=hide_index,
-            column_config=column_config,
-        )
+    spalten, zeilen = _tabellenzeilen(daten)
+    if not spalten:
+        st.markdown("Keine Daten verfügbar.")
+        return
+
+    kopf = []
+    for spalte in spalten:
+        klasse = "narrow-column" if spalte in {"Nr.", "Rang"} else ""
+        kopf.append(f'<th class="{klasse}">{escape(spalte)}</th>')
+
+    koerper = []
+    for zeile in zeilen:
+        zellen = []
+        for spalte in spalten:
+            rohwert = zeile.get(spalte, "")
+            text = _tabellenwert(rohwert)
+            klassen = []
+            if spalte in {"Nr.", "Rang"}:
+                klassen.append("narrow-column")
+            if isinstance(rohwert, (int, float)) and not isinstance(rohwert, bool):
+                klassen.append("numeric-cell")
+            if text.strip() == "Fehlender Wert":
+                klassen.append("missing-cell")
+            klassen_text = " ".join(klassen)
+            zellen.append(
+                f'<td class="{klassen_text}">{escape(text).replace(chr(10), "<br>")}</td>'
+            )
+        koerper.append("<tr>" + "".join(zellen) + "</tr>")
+
+    html = (
+        '<div class="app-table-wrapper">'
+        '<div class="app-table-shell">'
+        '<table class="app-table">'
+        '<thead><tr>' + "".join(kopf) + '</tr></thead>'
+        '<tbody>' + "".join(koerper) + '</tbody>'
+        '</table></div></div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def szenarioauswahl_abgeschlossen() -> bool:
     return bool(st.session_state.typ and st.session_state.optionen)
+
+
+def _assistententext_hinzufuegen(text: str):
+    """Fügt eine normale Assistentennachricht in kompatibler Form hinzu."""
+    st.session_state.messages.append(
+        {"role": "assistant", "content": [{"type": "text", "text": text}]}
+    )
+
+
+def _naechster_offener_wert():
+    """Ermittelt den nächsten fehlenden Wert in stabiler Tabellenreihenfolge."""
+    offen = offene_werte()
+    if not offen:
+        return None
+    aktiv = aktive_kennzahlen(MATRIX, st.session_state.typ)
+    for option in st.session_state.optionen:
+        fehlende_kennzahlen = set(offen.get(option, []))
+        for kennzahl in aktiv:
+            if kennzahl in fehlende_kennzahlen:
+                return option, kennzahl
+    return None
+
+
+def _frage_fuer_wert(option: str, kennzahl: str) -> str:
+    if option == "Standort A" and kennzahl == "Fertigungskosten":
+        return (
+            "Wie hoch sind die Fertigungseinzelkosten pro Produktionseinheit "
+            "am Standort A in Euro pro Stück?"
+        )
+    if option == "Standort A" and kennzahl == "Qualitätsrate":
+        return "Wie hoch ist die Qualitätsrate am Standort A in Prozent?"
+    if option == "Standort B" and kennzahl == "Anteil erneuerbarer Energien":
+        return (
+            "Wie hoch ist der Gesamtenergieverbrauch am Standort B in "
+            "Kilowattstunden pro Jahr?"
+        )
+    return f"Welchen Istwert möchten Sie für {kennzahl} am {option} angeben?"
+
+
+def _deutsche_zahl_lesen(text: str):
+    """Liest Zahlen wie 2.000, 98,5 oder 10.000.000 robust aus Fließtext."""
+    treffer = re.findall(r"[-+]?\d[\d. ]*(?:,\d+)?", text or "")
+    if not treffer:
+        return None
+    token = treffer[-1].strip().replace(" ", "")
+    try:
+        if "," in token:
+            token = token.replace(".", "").replace(",", ".")
+        elif token.count(".") > 1:
+            token = token.replace(".", "")
+        elif token.count(".") == 1:
+            links, rechts = token.split(".")
+            if len(rechts) == 3 and len(links) >= 1:
+                token = links + rechts
+        return float(token)
+    except (TypeError, ValueError):
+        return None
+
+
+def _wert_ist_plausibel(kennzahl: str, wert: float) -> bool:
+    if wert is None:
+        return False
+    if kennzahl == "Qualitätsrate":
+        return 0 <= wert <= 100
+    return wert > 0
+
+
+def _speichere_phase3_wert(option: str, kennzahl: str, wert: float) -> bool:
+    ziel = st.session_state.nutzer_werte.setdefault(option, {})
+    if option == "Standort A" and kennzahl == "Fertigungskosten":
+        ergebnis = berechne_formel_kennzahl(
+            kennzahl,
+            {"fertigungseinzelkosten_pro_einheit": wert},
+        )
+        if ergebnis is None:
+            return False
+        ziel[kennzahl] = ergebnis
+        return True
+    if option == "Standort B" and kennzahl == "Anteil erneuerbarer Energien":
+        ergebnis = berechne_formel_kennzahl(
+            kennzahl,
+            {"gesamtenergieverbrauch": wert},
+        )
+        if ergebnis is None:
+            return False
+        ziel[kennzahl] = ergebnis
+        return True
+    ziel[kennzahl] = float(wert)
+    return True
+
+
+def _ist_bestaetigung(text: str) -> bool:
+    bereinigt = (text or "").strip().lower()
+    schluessel = (
+        "ja", "passt", "korrekt", "richtig", "weiter", "fortfahren",
+        "kann weiter", "können weiter", "so ist es", "einverstanden",
+    )
+    return any(wort in bereinigt for wort in schluessel)
+
+
+def verarbeite_phase3_eingabe(eingabe: str):
+    """Verarbeitet die drei Validierungseingaben ohne LLM-Tool-Aufruf.
+
+    Dadurch bleibt die Datenabfrage auch bei unterschiedlich formulierten
+    Zahlenangaben stabil und kann nach jedem Wert sicher fortgesetzt werden.
+    """
+    naechster = _naechster_offener_wert()
+    if naechster is None:
+        if _ist_bestaetigung(eingabe):
+            st.session_state.phase = 4
+            _assistententext_hinzufuegen(
+                "Vielen Dank. Die Angaben werden nun für die Berechnung verwendet."
+            )
+        else:
+            _assistententext_hinzufuegen(
+                "Bitte bestätigen Sie, ob die vollständig ausgefüllte Tabelle "
+                "korrekt ist und mit der Berechnung fortgefahren werden kann."
+            )
+        return
+
+    option, kennzahl = naechster
+    wert = _deutsche_zahl_lesen(eingabe)
+    if not _wert_ist_plausibel(kennzahl, wert):
+        _assistententext_hinzufuegen(
+            "Die Eingabe konnte nicht eindeutig als plausibler Zahlenwert "
+            "verarbeitet werden. " + _frage_fuer_wert(option, kennzahl)
+        )
+        return
+
+    if not _speichere_phase3_wert(option, kennzahl, wert):
+        _assistententext_hinzufuegen(
+            "Der Wert konnte technisch nicht gespeichert werden. Bitte geben "
+            "Sie ihn erneut als reine Zahl ein."
+        )
+        return
+
+    naechster = _naechster_offener_wert()
+    if naechster is not None:
+        _assistententext_hinzufuegen(_frage_fuer_wert(*naechster))
+    else:
+        _assistententext_hinzufuegen(
+            "Alle erforderlichen Werte liegen nun vor. Bitte prüfen Sie die "
+            "vollständig ausgefüllte Tabelle und bestätigen Sie, ob die Angaben "
+            "korrekt sind und mit der Berechnung fortgefahren werden kann."
+        )
 
 
 # =============================================================
@@ -792,7 +1079,7 @@ def fuehre_werkzeug_aus(aufruf):
         # Die laufende Dialogrunde erzeugt bereits die erste Antwort der neuen
         # Phase. Die Auto-Trigger dürfen diese Antwort daher nicht duplizieren.
         if st.session_state.phase == 3:
-            st.session_state.phase3_gestartet = True
+            st.session_state.phase3_gestartet = False
         if st.session_state.phase == 6:
             st.session_state.phase6_gestartet = True
         return f"Phase gewechselt. Aktuelle Phase: {st.session_state.phase}."
@@ -952,6 +1239,14 @@ def fuehre_dialog_runde():
             {"role": "user", "content": ergebnisse}
         )
 
+        # Phase 3 startet bewusst deterministisch. Nach dem Phasenwechsel
+        # wird keine zweite Modellantwort erzeugt; der Auto-Trigger stellt
+        # stattdessen die erste konkrete Datenfrage.
+        if st.session_state.phase == 3 and any(
+            aufruf.name == "naechste_phase" for aufruf in tool_aufrufe
+        ):
+            return
+
 
 def chat_eingabe(platzhalter="Ihre Antwort"):
     eingabe = st.chat_input(platzhalter)
@@ -959,8 +1254,12 @@ def chat_eingabe(platzhalter="Ihre Antwort"):
         st.session_state.messages.append({"role": "user", "content": eingabe})
         with st.chat_message("user"):
             st.markdown(eingabe)
-        with st.spinner("Antwort wird erstellt"):
-            fuehre_dialog_runde()
+
+        if st.session_state.phase == 3:
+            verarbeite_phase3_eingabe(eingabe)
+        else:
+            with st.spinner("Antwort wird erstellt"):
+                fuehre_dialog_runde()
         st.rerun()
 
 
@@ -1049,18 +1348,14 @@ if PHASE == 0 and not st.session_state.phase0_gestartet:
 
 if PHASE == 3 and not st.session_state.phase3_gestartet:
     st.session_state.phase3_gestartet = True
-    with st.spinner("Datenlage wird geprüft"):
-        st.session_state.messages.append(
-            {
-                "role": "user",
-                "content": (
-                    AUTO_MARKER
-                    + " Starten Sie die Datenabfrage. Fragen Sie ausschließlich "
-                    "den ersten noch fehlenden Wert in einem Satz ab."
-                ),
-            }
+    naechster = _naechster_offener_wert()
+    if naechster is not None:
+        _assistententext_hinzufuegen(_frage_fuer_wert(*naechster))
+    else:
+        _assistententext_hinzufuegen(
+            "Alle erforderlichen Werte liegen vor. Bitte prüfen Sie die Tabelle "
+            "und bestätigen Sie, ob mit der Berechnung fortgefahren werden kann."
         )
-        fuehre_dialog_runde()
     st.rerun()
 
 if PHASE == 6 and not st.session_state.phase6_gestartet:
