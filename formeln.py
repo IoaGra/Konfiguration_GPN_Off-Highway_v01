@@ -17,8 +17,8 @@ Im Code liegen nur systemseitige Rechengroessen, die der Chatbot zur Berechnung
 fehlender Kennzahlen ergaenzt.
 """
 
-from __future__ import annotations
 import os
+from typing import Dict, List, Optional
 
 
 def _env_float(name: str, default: float) -> float:
@@ -123,7 +123,7 @@ DIREKT_ABZUFRAGEN = {
 }
 
 
-def ist_formel_kennzahl(kennzahl: str, option: str | None = None) -> bool:
+def ist_formel_kennzahl(kennzahl: str, option: Optional[str] = None) -> bool:
     definition = FORMEL_KENNZAHLEN.get(kennzahl)
     if not definition:
         return False
@@ -149,7 +149,7 @@ def berechne_formel_kennzahl(kennzahl: str, faktoren: dict):
     return round(definition["funktion"](*werte), 2)
 
 
-def formel_hinweis_fuer_prompt(offene: dict | None = None) -> str:
+def formel_hinweis_fuer_prompt(offene: Optional[Dict] = None) -> str:
     """Kompakte Beschreibung der fehlenden Werte fuer den System-Prompt.
 
     Enthält keine Leitfadenwerte. Der Nutzer muss die Werte aus
@@ -174,11 +174,11 @@ def formel_hinweis_fuer_prompt(offene: dict | None = None) -> str:
     return "\n".join(teile)
 
 
-def formel_liste_fuer_pdf() -> list[str]:
+def formel_liste_fuer_pdf() -> List[str]:
     return [d["formel_text"] for d in FORMEL_KENNZAHLEN.values()]
 
 
-def formel_beispiele_fuer_ui() -> list[dict]:
+def formel_beispiele_fuer_ui() -> List[Dict]:
     """Strukturierte Formeln und Eingabehinweise fuer Streamlit/PDF.
 
     Der Funktionsname bleibt aus Kompatibilitaetsgruenden erhalten. Die

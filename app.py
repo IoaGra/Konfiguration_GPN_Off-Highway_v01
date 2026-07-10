@@ -1,39 +1,44 @@
 # =============================================================
-#  HAUPTANWENDUNG (Streamlit) - validierungsorientierte Version
+# HAUPTANWENDUNG (Streamlit) - validierungsorientierte Version
 # =============================================================
-#  Entscheidungsassistent fuer die Konfiguration globaler
-#  Produktionsnetzwerke (Off-Highway-Motorenbranche).
+# Entscheidungsassistent fuer die Konfiguration globaler
+# Produktionsnetzwerke in der Off-Highway-Motorenbranche.
 #
-#  Grundprinzip:
-#   - Claude fuehrt den Dialog und steuert die Phasen.
-#   - Alle Berechnungen erfolgen deterministisch im Python-Code.
-#   - Die Kennzahlenauswahl erfolgt im Hintergrund ueber die Matrix.
-#   - Die Ergebnis-PDF dokumentiert die initiale Gewichtung aus Phase 2.
+# Grundprinzip:
+# - Claude fuehrt den Dialog und steuert die Phasen.
+# - Alle Berechnungen erfolgen deterministisch im Python-Code.
+# - Die Kennzahlenauswahl erfolgt im Hintergrund ueber die Matrix.
+# - Die Ergebnis-PDF dokumentiert die initiale Gewichtung.
 # =============================================================
 
 import json
-import streamlit as st
+from typing import Optional
+
 import anthropic
+import streamlit as st
 
 from berechnung import berechne_nutzwerte
-from formeln import (berechne_formel_kennzahl, formel_hinweis_fuer_prompt,
-                     ist_formel_kennzahl, formel_beispiele_fuer_ui)
 from daten import lade_daten, dimensionen_aus_kpis
-from matrix import lade_matrix, aktive_kennzahlen
-from szenarien import SZENARIO_BESCHREIBUNGEN
 from dimensionen import DIMENSION_BESCHREIBUNGEN
-from phasen import PHASEN, ANZAHL_PHASEN
+from formeln import (
+    berechne_formel_kennzahl,
+    formel_beispiele_fuer_ui,
+    formel_hinweis_fuer_prompt,
+    ist_formel_kennzahl,
+)
+from matrix import aktive_kennzahlen, lade_matrix
 from pdf_export import erstelle_ergebnis_pdf
+from phasen import ANZAHL_PHASEN, PHASEN
+from szenarien import SZENARIO_BESCHREIBUNGEN
 
 # -------------------------------------------------------------
-# Modell und Tokenlimit
+# Modell und Darstellung
 # -------------------------------------------------------------
-# Anthropic API-ID fuer Claude Opus. Bei Bedarf in Streamlit Secrets
-# mit CLAUDE_MODEL ueberschreiben.
 MODELL = st.secrets.get("CLAUDE_MODEL", "claude-opus-4-8")
-MAX_TOKENS = 900
-HERKUNFT_LABEL = {"system": "aus System", "nutzer": "Nutzereingabe"}
+MAX_TOKENS = 850
+HERKUNFT_LABEL = {"system": "Systemwert", "nutzer": "Nutzereingabe"}
 AUTO_MARKER = "[AUTO]"
+ZUSAETZLICHE_OPTIONEN = ["Standort C"]
 
 DEFAULT_GEWICHTE = {
     "Effizienz": 0.20,
@@ -43,19 +48,123 @@ DEFAULT_GEWICHTE = {
     "Ökologische Nachhaltigkeit": 0.20,
 }
 
-st.set_page_config(page_title="Entscheidungsmodell Produktionsnetzwerke",
-                   page_icon="🏭", layout="wide")
+st.set_page_config(
+    page_title="Konfiguration globaler Produktionsnetzwerke",
+    layout="wide",
+)
+
+# Zusaetzlich zur Streamlit-Dark-Theme-Konfiguration wird die Oberflaeche
+# hier einheitlich schwarz, weiss und blau gestaltet.
+st.markdown(
+    """
+    <style>
+    :root {
+        --app-bg: #05070b;
+        --panel-bg: #0b111a;
+        --panel-bg-2: #101925;
+        --text: #ffffff;
+        --accent: #2f81f7;
+        --accent-hover: #4c96ff;
+        --border: #27405e;
+    }
+
+    .stApp,
+    [data-testid="stAppViewContainer"],
+    [data-testid="stHeader"] {
+        background: var(--app-bg) !important;
+        color: var(--text) !important;
+    }
+
+    [data-testid="stSidebar"] {
+        background: var(--panel-bg) !important;
+        border-right: 1px solid var(--border);
+    }
+
+    [data-testid="stSidebar"] *,
+    .stApp p,
+    .stApp span,
+    .stApp label,
+    .stApp li,
+    .stApp h1,
+    .stApp h2,
+    .stApp h3,
+    .stApp h4,
+    .stApp h5,
+    .stApp h6,
+    .stMarkdown,
+    [data-testid="stText"] {
+        color: var(--text) !important;
+    }
+
+    [data-testid="stChatMessage"] {
+        background: var(--panel-bg) !important;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        padding: 0.25rem 0.75rem;
+        margin-bottom: 0.55rem;
+    }
+
+    .stButton > button,
+    .stDownloadButton > button {
+        background: var(--panel-bg-2) !important;
+        color: var(--text) !important;
+        border: 1px solid var(--accent) !important;
+        border-radius: 7px !important;
+    }
+
+    .stButton > button:hover,
+    .stDownloadButton > button:hover {
+        background: var(--accent) !important;
+        color: var(--text) !important;
+    }
+
+    .stButton > button:disabled {
+        color: var(--text) !important;
+        opacity: 1 !important;
+        border-color: var(--border) !important;
+    }
+
+    [data-testid="stChatInput"] textarea,
+    [data-testid="stChatInput"] input {
+        color: var(--text) !important;
+        background: var(--panel-bg) !important;
+    }
+
+    [data-testid="stDataFrame"],
+    [data-testid="stTable"] {
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        overflow: hidden;
+    }
+
+    [data-baseweb="slider"] div[role="slider"] {
+        background-color: var(--accent) !important;
+    }
+
+    hr {
+        border-color: var(--border) !important;
+    }
+
+    a {
+        color: var(--accent-hover) !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 try:
     client = anthropic.Anthropic(api_key=st.secrets["ANTHROPIC_API_KEY"])
 except Exception:
-    st.error("Kein API-Schlüssel gefunden. Bitte in den App-Einstellungen "
-             "unter 'Secrets' den Eintrag ANTHROPIC_API_KEY hinterlegen.")
+    st.error(
+        "Kein API-Schlüssel gefunden. Bitte hinterlegen Sie in den "
+        "App-Einstellungen unter 'Secrets' den Eintrag ANTHROPIC_API_KEY."
+    )
     st.stop()
 
 
 # -------------------------------------------------------------
-#  Statische Daten (gecached)
+# Statische Daten
 # -------------------------------------------------------------
 @st.cache_data
 def _lade_alles():
@@ -64,18 +173,16 @@ def _lade_alles():
     return kpis, optionen, werte, fehlend, typen, mat
 
 
-KPIS, ALLE_OPTIONEN, SYSTEM_WERTE, FEHLEND, SZENARIO_TYPEN, MATRIX = _lade_alles()
+KPIS, EXCEL_OPTIONEN, SYSTEM_WERTE, FEHLEND, SZENARIO_TYPEN, MATRIX = _lade_alles()
 ALLE_DIMENSIONEN = dimensionen_aus_kpis(KPIS)
+VERFUEGBARE_OPTIONEN = list(dict.fromkeys(EXCEL_OPTIONEN + ZUSAETZLICHE_OPTIONEN))
 
 
 # =============================================================
-#  HILFSFUNKTIONEN (deterministisch)
+# HILFSFUNKTIONEN
 # =============================================================
-
 def baue_rohwerte():
-    """Fuegt System-Werte und Nutzer-Werte fuer die gewaehlten Optionen
-    zusammen. Rueckgabe: (rohwerte, herkunft) je {option: {kennzahl: ...}}.
-    """
+    """Fuegt System- und Nutzerwerte fuer die gewaehlten Optionen zusammen."""
     aktiv = aktive_kennzahlen(MATRIX, st.session_state.typ) if st.session_state.typ else []
     rohwerte, herkunft = {}, {}
     for opt in st.session_state.optionen:
@@ -91,7 +198,7 @@ def baue_rohwerte():
 
 
 def offene_werte():
-    """Welche aktiven Kennzahlen fehlen je gewaehlter Option noch?"""
+    """Ermittelt noch fehlende aktive Kennzahlen je gewaehlter Option."""
     if not st.session_state.typ:
         return {}
     aktiv = aktive_kennzahlen(MATRIX, st.session_state.typ)
@@ -122,6 +229,7 @@ def slider_geaendert(geaendert, dims, ziel_key="gewichte"):
     andere = [d for d in dims if d != geaendert]
     if not andere:
         return
+
     rest_alt = sum(st.session_state[f"w_{d}"] for d in andere)
     rest_neu = 100 - neu
     if rest_alt == 0:
@@ -134,6 +242,7 @@ def slider_geaendert(geaendert, dims, ziel_key="gewichte"):
             st.session_state[f"w_{d}"] = round(st.session_state[f"w_{d}"] * faktor)
             verteilt += st.session_state[f"w_{d}"]
         st.session_state[f"w_{andere[-1]}"] = rest_neu - verteilt
+
     for d in dims:
         st.session_state[ziel_key][d] = st.session_state[f"w_{d}"] / 100.0
 
@@ -143,10 +252,16 @@ def zeige_gewichts_slider(dims, ziel_key="gewichte"):
         if f"w_{d}" not in st.session_state:
             st.session_state[f"w_{d}"] = round(st.session_state[ziel_key][d] * 100)
     for d in dims:
-        st.slider(d, min_value=0, max_value=100, key=f"w_{d}",
-                  on_change=slider_geaendert, args=(d, dims, ziel_key))
+        st.slider(
+            d,
+            min_value=0,
+            max_value=100,
+            key=f"w_{d}",
+            on_change=slider_geaendert,
+            args=(d, dims, ziel_key),
+        )
     summe = sum(st.session_state[f"w_{d}"] for d in dims)
-    st.write(f"**Summe:** {summe} %")
+    st.markdown(f"**Summe der Gewichtungen: {summe} %**")
 
 
 def setze_slider_aus_gewichten(gewichte):
@@ -155,7 +270,6 @@ def setze_slider_aus_gewichten(gewichte):
 
 
 def initiale_gewichte():
-    """Initiale Gewichtung fuer den Validierungs-Use-Case."""
     vorhandene = {d: DEFAULT_GEWICHTE.get(d, 0.0) for d in ALLE_DIMENSIONEN}
     summe = sum(vorhandene.values())
     if summe <= 0:
@@ -163,12 +277,24 @@ def initiale_gewichte():
     return {d: vorhandene[d] / summe for d in ALLE_DIMENSIONEN}
 
 
-def _block_attr(b, name):
-    return b.get(name) if isinstance(b, dict) else getattr(b, name, None)
+def _block_attr(block, name):
+    return block.get(name) if isinstance(block, dict) else getattr(block, name, None)
 
 
-def zeige_verlauf():
-    for m in st.session_state.messages:
+def _index_letzte_assistentennachricht() -> Optional[int]:
+    for i in range(len(st.session_state.messages) - 1, -1, -1):
+        m = st.session_state.messages[i]
+        if m["role"] == "assistant" and isinstance(m["content"], list):
+            if any(_block_attr(b, "type") == "text" for b in m["content"]):
+                return i
+    return None
+
+
+def zeige_verlauf(letzte_assistentenantwort_auslassen=False):
+    auslassen = _index_letzte_assistentennachricht() if letzte_assistentenantwort_auslassen else None
+    for i, m in enumerate(st.session_state.messages):
+        if i == auslassen:
+            continue
         if m["role"] == "user":
             if isinstance(m["content"], str) and not m["content"].startswith(AUTO_MARKER):
                 with st.chat_message("user"):
@@ -185,28 +311,54 @@ def zeige_verlauf():
 def letzter_bot_text():
     for m in reversed(st.session_state.messages):
         if m["role"] == "assistant" and isinstance(m["content"], list):
-            texte = [_block_attr(b, "text") for b in m["content"]
-                     if _block_attr(b, "type") == "text"]
+            texte = [
+                _block_attr(b, "text")
+                for b in m["content"]
+                if _block_attr(b, "type") == "text"
+            ]
             texte = [t for t in texte if t]
             if texte:
                 return "\n".join(texte)
     return ""
 
 
-# =============================================================
-#  SPRACHMODELL: System-Prompt + Werkzeuge
-# =============================================================
+def zeige_aktuellen_bot_text():
+    text = letzter_bot_text()
+    if text:
+        with st.chat_message("assistant"):
+            st.markdown(text)
 
+
+def datenuebersicht():
+    rohwerte, herkunft = baue_rohwerte()
+    aktiv = aktive_kennzahlen(MATRIX, st.session_state.typ)
+    zeilen = []
+    for k in aktiv:
+        zeile = {
+            "Leistungsdimension": KPIS[k]["dimension"],
+            "Kennzahl": k,
+            "Einheit": KPIS[k]["einheit"],
+        }
+        for opt in st.session_state.optionen:
+            if k in rohwerte.get(opt, {}):
+                quelle = HERKUNFT_LABEL.get(herkunft[opt][k], "Unbekannt")
+                zeile[opt] = f"{rohwerte[opt][k]} ({quelle})"
+            else:
+                zeile[opt] = "Fehlender Wert"
+        zeilen.append(zeile)
+    return zeilen
+
+
+# =============================================================
+# SPRACHMODELL: SYSTEM-PROMPT UND WERKZEUGE
+# =============================================================
 def _kompakte_beschreibungen():
-    """Tokenarme Beschreibungen nur fuer Phasen, in denen Nachfragen
-    wahrscheinlich sind.
-    """
     if st.session_state.phase not in (1, 2):
         return ""
     return (
-        "\nKurzbeschreibungen Szenarien: "
+        "\nBeschreibungen der Szenarien: "
         + json.dumps(SZENARIO_BESCHREIBUNGEN, ensure_ascii=False)
-        + "\nKurzbeschreibungen Leistungsdimensionen: "
+        + "\nBeschreibungen der Leistungsdimensionen: "
         + json.dumps(DIMENSION_BESCHREIBUNGEN, ensure_ascii=False)
     )
 
@@ -214,32 +366,31 @@ def _kompakte_beschreibungen():
 def baue_system_prompt():
     phase = st.session_state.phase
     typ = st.session_state.typ
-
     szenario_namen = ", ".join(SZENARIO_TYPEN)
-    options_namen = ", ".join(ALLE_OPTIONEN)
-    optionen_zeile = "" if phase == 1 else f"\nVerfuegbare Optionen: {options_namen}"
+    options_namen = ", ".join(VERFUEGBARE_OPTIONEN)
     dims = ", ".join(ALLE_DIMENSIONEN)
 
     kontext = ""
     if typ:
         aktiv = aktive_kennzahlen(MATRIX, typ)
         kontext += (
-            f"\nGewaehlter Szenario-Typ: {typ}. "
-            f"Gewaehlte Optionen: {', '.join(st.session_state.optionen)}. "
-            f"Aktive Kennzahlen laut Matrix: {', '.join(aktiv)}."
+            f"\nAusgewählter Szenario-Typ: {typ}. "
+            f"Betrachtete Baureihe: {st.session_state.baureihe or 'nicht angegeben'}. "
+            f"Gewählte Optionen: {', '.join(st.session_state.optionen)}. "
+            f"Aktive Kennzahlen: {', '.join(aktiv)}."
         )
 
     if phase == 3 and typ:
         offen = offene_werte()
         if offen:
             kontext += (
-                "\nIn Phase 3 muessen diese fehlenden Werte abgefragt werden: "
+                "\nNoch fehlende Werte: "
                 + "; ".join(f"{o}: {', '.join(ks)}" for o, ks in offen.items())
-                + "\nAbfragehinweise:\n"
+                + "\nHinweise zur Abfrage:\n"
                 + formel_hinweis_fuer_prompt(offen)
             )
         else:
-            kontext += "\nAlle Werte liegen vor."
+            kontext += "\nAlle erforderlichen Werte liegen vor."
 
     if phase == 4 and st.session_state.basis_ergebnis:
         erg = st.session_state.basis_ergebnis
@@ -255,7 +406,7 @@ def baue_system_prompt():
     if phase == 5:
         if st.session_state.basis_ergebnis:
             kontext += (
-                "\nInitiale Empfehlung aus Phase 4: "
+                "\nInitiale Empfehlung: "
                 f"{st.session_state.basis_ergebnis.get('empfehlung')}."
             )
         if st.session_state.sensitivitaet_ergebnis:
@@ -266,94 +417,106 @@ def baue_system_prompt():
                 "raenge": se["raenge"],
                 "empfehlung": se["empfehlung"],
             }
-            kontext += "\nLetztes Ergebnis der Sensitivitaetsanalyse: " + json.dumps(kompakt, ensure_ascii=False)
+            kontext += (
+                "\nLetztes Ergebnis der Sensitivitätsanalyse: "
+                + json.dumps(kompakt, ensure_ascii=False)
+            )
 
     if phase == 6 and st.session_state.basis_ergebnis:
         erg = st.session_state.basis_ergebnis
         kompakt = {
+            "baureihe": st.session_state.baureihe,
             "gewichte": erg["gewichte"],
             "dim_scores": erg["dim_scores"],
             "nutzwerte": erg["nutzwerte"],
             "raenge": erg["raenge"],
             "empfehlung": erg["empfehlung"],
             "normwerte": erg["normwerte"],
-            "herkunft": erg["herkunft"],
             "robustheit": st.session_state.robustheit,
         }
-        kontext += "\nERGEBNIS FUER ZUSAMMENFASSUNG: " + json.dumps(kompakt, ensure_ascii=False)
+        kontext += (
+            "\nErgebnis für die Abschlusszusammenfassung: "
+            + json.dumps(kompakt, ensure_ascii=False)
+        )
 
     phasen_anweisung = {
         0: (
-            "Begruesse den Nutzer. Erklaere knapp, dass der Chatbot durch "
-            "Szenarioauswahl, Gewichtung, Datenabfrage, Berechnung, "
-            "Sensitivitaetsanalyse und Zusammenfassung fuehrt. Frage am Ende, "
-            "ob es losgehen kann. Wenn der Nutzer zustimmt, rufe naechste_phase auf."
+            "Begrüßen Sie die nutzende Person professionell. Erklären Sie in "
+            "wenigen Sätzen, dass die Anwendung durch Szenarioauswahl, "
+            "Gewichtung, Datenabfrage, Berechnung, Sensitivitätsanalyse und "
+            "Zusammenfassung führt. Fragen Sie anschließend, ob begonnen "
+            "werden kann. Bei Zustimmung rufen Sie naechste_phase auf."
         ),
         1: (
-            "Nenne zu Beginn nur die verfuegbaren Szenario-Typen mit Namen. "
-            "Zeige die verfuegbaren Optionen noch nicht. Erst nachdem der Nutzer "
-            "einen Szenario-Typ gewaehlt hat, nenne die verfuegbaren Optionen "
-            f"({options_namen}) und frage, welche mindestens zwei Optionen "
-            "verglichen werden sollen. Fuer die Validierung ist vorgesehen: "
-            "'Verlagerung der Produktion an anderen Standort' mit Standort A "
-            "und Standort B. Wenn Typ und Optionen klar sind, rufe "
+            "Nennen Sie zunächst ausschließlich die verfügbaren Szenario-Typen. "
+            "Nennen Sie zu diesem Zeitpunkt noch keine Standorte. Nachdem ein "
+            "Szenario-Typ gewählt wurde, fragen Sie bei einer Verlagerung zuerst, "
+            "welche Baureihe verlagert werden soll. Nennen Sie danach die "
+            f"möglichen Zielstandorte {options_namen} und fragen Sie, welche "
+            "mindestens zwei Standorte verglichen werden sollen. Standort C muss "
+            "als mögliche Auswahl angeboten werden. Sobald Szenario-Typ, "
+            "Baureihe und Optionen eindeutig feststehen, rufen Sie "
             "setze_szenarien auf."
         ),
         2: (
-            "Die Gewichtung erfolgt ueber Schieberegler in der App. Erklaere "
-            "kurz die fuenf Leistungsdimensionen nur bei Bedarf. Wenn der Nutzer "
-            "im Chat schreibt, dass es weitergehen soll, rufe naechste_phase auf."
+            "Die Gewichtung erfolgt über die Schieberegler. Erläutern Sie die "
+            "Leistungsdimensionen nur auf Nachfrage. Sobald die nutzende Person "
+            "schriftlich bestätigt, dass die Gewichtung abgeschlossen ist, "
+            "rufen Sie naechste_phase auf."
         ),
         3: (
-            "Erklaere: In dieser Phase werden Daten abgefragt. Einige Daten "
-            "liegen bereits im System vor, die restlichen Werte benoetigst du "
-            "vom Nutzer. Nenne einmal kompakt, welche Kennzahlen fuer das "
-            "Szenario relevant sind. Frage die fehlenden Werte anschliessend "
-            "schrittweise ab. Die Werte aus dem Validierungsleitfaden sind "
-            "nicht im Code hinterlegt und muessen vom Nutzer eingegeben werden. "
-            "Bei Formel-Kennzahlen frage nur die angegebenen "
-            "Faktoren ab und rufe speichere_fehlende_werte auf. Rechne niemals "
-            "selbst. Wenn alle Werte vorliegen und der Nutzer bereit ist, rufe "
-            "naechste_phase auf."
+            "Die Anwendung zeigt bereits eine Erläuterung und die Datentabelle. "
+            "Wiederholen Sie diese Inhalte nicht. Fragen Sie pro Antwort genau "
+            "einen fehlenden Wert in einem vollständigen Satz ab. Verwenden Sie "
+            "für Rückfragen keine Aufzählungen. Bei Formel-Kennzahlen fragen Sie "
+            "nur die vorgegebenen Eingabefaktoren ab und rufen danach "
+            "speichere_fehlende_werte auf. Führen Sie selbst keine Rechnung aus. "
+            "Wenn alle Werte vorliegen, fragen Sie in einem vollständigen Satz, "
+            "ob die ausgefüllte Tabelle korrekt ist und mit der Berechnung "
+            "fortgefahren werden kann. Wechseln Sie erst nach Bestätigung mit "
+            "naechste_phase."
         ),
         4: (
-            "Die Berechnung wird in der App angezeigt. Erklaere nur auf Wunsch "
-            "Details zur Normierungsformel. Wenn der Nutzer weiter moechte, rufe "
+            "Die Berechnung wird vollständig in der Anwendung dargestellt. "
+            "Beantworten Sie fachliche Rückfragen in professionellem Fließtext. "
+            "Sobald die nutzende Person fortfahren möchte, rufen Sie "
             "naechste_phase auf."
         ),
         5: (
-            "Der Nutzer testet die Robustheit, indem er die Gewichtungen in der "
-            "App variiert und neu berechnet. Bitte ihn danach um eine klare "
-            "Einschaetzung, ob das Ergebnis robust ist oder nicht. Sobald diese "
-            "Einschaetzung vorliegt, rufe speichere_robustheit auf."
+            "Die nutzende Person variiert die Gewichtungen und berechnet das "
+            "Ergebnis erneut. Bitten Sie anschließend in einem vollständigen "
+            "Satz um die Einschätzung, ob das Ergebnis robust oder nicht robust "
+            "ist. Sobald diese Einschätzung vorliegt, rufen Sie "
+            "speichere_robustheit auf."
         ),
         6: (
-            "Erstelle eine aussagekraeftige Abschluss-Zusammenfassung entlang "
-            "der Phasen. Erklaere insbesondere, warum die Empfehlung zustande "
-            "kommt: nenne die wichtigsten Dimensions-Scores, auffaellige "
-            "Normwerte und Nutzwertunterschiede zwischen den Optionen. Nutze "
-            "nur Zahlen aus dem Kontext. Beende deine Antwort zwingend mit den "
-            "Abschnitten:\n"
-            "ZUSAMMENFASSUNG:\n- 4 bis 6 ausfuehrliche Stichpunkte mit konkreten Werten.\n"
-            "WEITERE BETRACHTUNG:\n- Beruecksichtige beim Verlagerungsszenario ausdruecklich, dass die "
-            "Verlagerung auch Auswirkungen auf den Ursprungsstandort hat.\n"
-            "- ..."
+            "Formulieren Sie eine professionelle textliche Zusammenfassung in "
+            "drei klar voneinander getrennten Absätzen ohne Stichpunkte. Der "
+            "erste Absatz beschreibt das Vorgehen. Der zweite Absatz erläutert "
+            "die Empfehlung anhand der Nutzwerte, Gewichtungen und wichtigsten "
+            "Unterschiede der Leistungsdimensionen. Der dritte Absatz ordnet die "
+            "Robustheitsbewertung ein und weist bei einer Produktionsverlagerung "
+            "darauf hin, dass auch Auswirkungen auf den Ursprungsstandort zu "
+            "berücksichtigen sind. Verwenden Sie ausschließlich Zahlen aus dem "
+            "Kontext."
         ),
     }[phase]
 
-    return f"""Du bist ein Entscheidungsassistent fuer die Konfiguration globaler Produktionsnetzwerke in der Off-Highway-Motorenbranche.
+    return f"""Sie sind ein professioneller Entscheidungsassistent für die Konfiguration globaler Produktionsnetzwerke in der Off-Highway-Motorenbranche.
 
-Verfuegbare Szenario-Typen: {szenario_namen}{optionen_zeile}
+Verfügbare Szenario-Typen: {szenario_namen}
 Leistungsdimensionen: {dims}
 
-Regeln:
-- Alle numerischen Berechnungen erfolgen ausschliesslich im Anwendungscode.
-- Du berechnest keine Scores, Nutzwerte, Normierungen, Mittelwerte oder Rankings selbst.
-- Bleibe in der aktuellen Phase und fuehre den Nutzer knapp und dialogorientiert.
-- Erklaere Szenarien und Leistungsdimensionen nur auf Nachfrage.
-- In Phase 1 duerfen die verfuegbaren Optionen erst genannt werden, nachdem der Nutzer einen Szenario-Typ gewaehlt hat.
-- Frage fehlende Informationen gezielt und schrittweise ab.
-- Antworte auf Deutsch.
+Verbindliche Regeln:
+- Sprechen Sie die nutzende Person konsequent mit "Sie" an.
+- Verwenden Sie keine Emojis.
+- Schreiben Sie professionell, sachlich und präzise.
+- Beantworten Sie Rückfragen ausschließlich als Fließtext und nicht als Stichpunkte.
+- Alle numerischen Berechnungen erfolgen ausschließlich im Anwendungscode.
+- Berechnen oder schätzen Sie keine Scores, Nutzwerte, Normierungen, Mittelwerte oder Rangfolgen.
+- Bleiben Sie in der aktuellen Phase.
+- Erklären Sie Szenarien und Leistungsdimensionen nur auf Nachfrage.
+- Fragen Sie fehlende Informationen einzeln und eindeutig ab.
 
 Aktuelle Phase {phase}: {PHASEN[phase]['titel']}
 {phasen_anweisung}
@@ -363,58 +526,82 @@ Aktuelle Phase {phase}: {PHASEN[phase]['titel']}
 
 
 def tool_definitionen():
-    werkzeuge = [{
-        "name": "naechste_phase",
-        "description": "Schaltet zur naechsten Phase weiter.",
-        "input_schema": {"type": "object", "properties": {}},
-    }]
+    werkzeuge = [
+        {
+            "name": "naechste_phase",
+            "description": "Schaltet zur nächsten Phase weiter.",
+            "input_schema": {"type": "object", "properties": {}},
+        }
+    ]
 
     if st.session_state.phase == 1:
-        werkzeuge.append({
-            "name": "setze_szenarien",
-            "description": "Legt Szenario-Typ und Optionen fest und schaltet zur Gewichtung.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "typ": {"type": "string"},
-                    "optionen": {"type": "array", "items": {"type": "string"}},
+        werkzeuge.append(
+            {
+                "name": "setze_szenarien",
+                "description": (
+                    "Legt Szenario-Typ, betroffene Baureihe und Optionen fest "
+                    "und schaltet zur Gewichtung."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "typ": {"type": "string"},
+                        "baureihe": {
+                            "type": "string",
+                            "description": "Betroffene Baureihe, zum Beispiel Baureihe 2.",
+                        },
+                        "optionen": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        },
+                    },
+                    "required": ["typ", "baureihe", "optionen"],
                 },
-                "required": ["typ", "optionen"],
-            },
-        })
+            }
+        )
 
     if st.session_state.phase == 3:
-        werkzeuge.append({
-            "name": "speichere_fehlende_werte",
-            "description": "Speichert fehlende Werte. Formel-Kennzahlen als Faktor-Objekt angeben.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "werte": {
-                        "type": "object",
-                        "description": "{Option: {Kennzahl: Zahl ODER Faktor-Objekt}}",
-                    }
+        werkzeuge.append(
+            {
+                "name": "speichere_fehlende_werte",
+                "description": (
+                    "Speichert fehlende Werte. Formel-Kennzahlen werden als "
+                    "Faktor-Objekt übergeben."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "werte": {
+                            "type": "object",
+                            "description": "{Option: {Kennzahl: Zahl ODER Faktor-Objekt}}",
+                        }
+                    },
+                    "required": ["werte"],
                 },
-                "required": ["werte"],
-            },
-        })
+            }
+        )
 
     if st.session_state.phase == 5:
-        werkzeuge.append({
-            "name": "speichere_robustheit",
-            "description": "Speichert die Robustheitsbewertung des Nutzers nach der Sensitivitaetsanalyse.",
-            "input_schema": {
-                "type": "object",
-                "properties": {
-                    "bewertung": {
-                        "type": "string",
-                        "description": "robust, nicht robust oder unklar",
+        werkzeuge.append(
+            {
+                "name": "speichere_robustheit",
+                "description": (
+                    "Speichert die Robustheitsbewertung nach der "
+                    "Sensitivitätsanalyse."
+                ),
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "bewertung": {
+                            "type": "string",
+                            "description": "robust, nicht robust oder unklar",
+                        },
+                        "begruendung": {"type": "string"},
                     },
-                    "begruendung": {"type": "string"},
+                    "required": ["bewertung"],
                 },
-                "required": ["bewertung"],
-            },
-        })
+            }
+        )
 
     return werkzeuge
 
@@ -423,25 +610,50 @@ def fuehre_werkzeug_aus(aufruf):
     if aufruf.name == "naechste_phase":
         if st.session_state.phase < ANZAHL_PHASEN - 1:
             st.session_state.phase += 1
+        # Die laufende Dialogrunde erzeugt bereits die erste Antwort der neuen
+        # Phase. Die Auto-Trigger dürfen diese Antwort daher nicht duplizieren.
+        if st.session_state.phase == 3:
+            st.session_state.phase3_gestartet = True
+        if st.session_state.phase == 6:
+            st.session_state.phase6_gestartet = True
         return f"Phase gewechselt. Aktuelle Phase: {st.session_state.phase}."
 
     if aufruf.name == "setze_szenarien":
         typ = (aufruf.input.get("typ") or "").strip()
+        baureihe = (aufruf.input.get("baureihe") or "").strip()
         optionen = aufruf.input.get("optionen") or []
+
         if typ not in SZENARIO_TYPEN:
-            return f"Unbekannter Szenario-Typ '{typ}'. Verfuegbar: {', '.join(SZENARIO_TYPEN)}."
-        gueltige = [o for o in optionen if o in ALLE_OPTIONEN]
+            return (
+                f"Unbekannter Szenario-Typ '{typ}'. Verfügbar sind: "
+                f"{', '.join(SZENARIO_TYPEN)}."
+            )
+        if "Verlagerung" in typ and not baureihe:
+            return "Für die Produktionsverlagerung muss eine Baureihe angegeben werden."
+
+        gueltige = list(dict.fromkeys(o for o in optionen if o in VERFUEGBARE_OPTIONEN))
         if len(gueltige) < 2:
-            return f"Mindestens zwei gueltige Optionen noetig. Verfuegbar: {', '.join(ALLE_OPTIONEN)}."
+            return (
+                "Es werden mindestens zwei gültige Optionen benötigt. "
+                f"Verfügbar sind: {', '.join(VERFUEGBARE_OPTIONEN)}."
+            )
+
         st.session_state.typ = typ
+        st.session_state.baureihe = baureihe
         st.session_state.optionen = gueltige
         st.session_state.gewichte = initiale_gewichte()
         setze_slider_aus_gewichten(st.session_state.gewichte)
+        st.session_state.nutzer_werte = {}
         st.session_state.basis_ergebnis = None
         st.session_state.sensitivitaet_ergebnis = None
         st.session_state.robustheit = None
+        st.session_state.phase3_gestartet = False
+        st.session_state.phase6_gestartet = False
         st.session_state.phase = 2
-        return f"Szenario gesetzt: {typ} mit Optionen {', '.join(gueltige)}. Phase 2 ist aktiv."
+        return (
+            f"Szenario gespeichert: {typ}; Baureihe: {baureihe}; "
+            f"Optionen: {', '.join(gueltige)}. Phase 2 ist aktiv."
+        )
 
     if aufruf.name == "speichere_fehlende_werte":
         werte = aufruf.input.get("werte") or {}
@@ -457,32 +669,41 @@ def fuehre_werkzeug_aus(aufruf):
                     ergebnis = berechne_formel_kennzahl(k, v)
                     if ergebnis is not None:
                         ziel[k] = ergebnis
-                        gespeichert.append(f"{opt}: {k} (aus Faktoren berechnet)")
+                        gespeichert.append(f"{opt}: {k}")
                 else:
                     try:
                         ziel[k] = float(v)
                         gespeichert.append(f"{opt}: {k}")
                     except (TypeError, ValueError):
                         continue
+
         offen = offene_werte()
         if offen:
             return (
-                "Gespeichert: " + ("; ".join(gespeichert) if gespeichert else "nichts")
-                + ". Es fehlen noch: "
+                "Gespeichert: "
+                + ("; ".join(gespeichert) if gespeichert else "kein gültiger Wert")
+                + ". Noch fehlend: "
                 + "; ".join(f"{o}: {', '.join(ks)}" for o, ks in offen.items())
-                + ". Bitte weiter schrittweise abfragen."
+                + ". Fragen Sie als Nächstes genau einen dieser Werte ab."
             )
         return (
-            "Gespeichert: " + ("; ".join(gespeichert) if gespeichert else "nichts")
-            + ". Alle Werte liegen vor. Frage, ob zur Berechnung gewechselt werden soll."
+            "Alle Werte wurden gespeichert. Fragen Sie nun in einem Satz, ob "
+            "die vollständig ausgefüllte Tabelle korrekt ist und mit der "
+            "Berechnung fortgefahren werden kann."
         )
 
     if aufruf.name == "speichere_robustheit":
         bewertung = (aufruf.input.get("bewertung") or "").strip()
         begruendung = (aufruf.input.get("begruendung") or "").strip()
-        st.session_state.robustheit = {"bewertung": bewertung, "begruendung": begruendung}
+        st.session_state.robustheit = {
+            "bewertung": bewertung,
+            "begruendung": begruendung,
+        }
         st.session_state.phase = 6
-        return "Robustheitsbewertung gespeichert. Phase 6 ist aktiv."
+        # Die nächste Modellantwort derselben Dialogrunde ist bereits die
+        # Abschlusszusammenfassung. Ein zweiter Auto-Aufruf wird verhindert.
+        st.session_state.phase6_gestartet = True
+        return "Die Robustheitsbewertung wurde gespeichert. Phase 6 ist aktiv."
 
     return "Unbekanntes Werkzeug."
 
@@ -498,40 +719,56 @@ def fuehre_dialog_runde():
                 messages=st.session_state.messages,
             )
         except Exception as e:
-            st.error("Verbindung zum Sprachmodell fehlgeschlagen. Bitte Seite neu laden "
-                     f"und erneut versuchen. (Details: {type(e).__name__})")
+            st.error(
+                "Die Verbindung zum Sprachmodell ist fehlgeschlagen. Bitte "
+                "laden Sie die Seite neu und versuchen Sie es erneut. "
+                f"Technischer Fehlertyp: {type(e).__name__}."
+            )
             return
 
-        st.session_state.messages.append({"role": "assistant", "content": antwort.content})
-        tool_aufrufe = [b for b in antwort.content if getattr(b, "type", None) == "tool_use"]
+        st.session_state.messages.append(
+            {"role": "assistant", "content": antwort.content}
+        )
+        tool_aufrufe = [
+            b for b in antwort.content if getattr(b, "type", None) == "tool_use"
+        ]
         if not tool_aufrufe:
             return
 
         ergebnisse = []
         for aufruf in tool_aufrufe:
             text = fuehre_werkzeug_aus(aufruf)
-            ergebnisse.append({"type": "tool_result", "tool_use_id": aufruf.id, "content": text})
-        st.session_state.messages.append({"role": "user", "content": ergebnisse})
+            ergebnisse.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": aufruf.id,
+                    "content": text,
+                }
+            )
+        st.session_state.messages.append(
+            {"role": "user", "content": ergebnisse}
+        )
 
 
-def chat_eingabe(platzhalter="Deine Antwort …"):
+def chat_eingabe(platzhalter="Ihre Antwort"):
     eingabe = st.chat_input(platzhalter)
     if eingabe:
         st.session_state.messages.append({"role": "user", "content": eingabe})
         with st.chat_message("user"):
             st.markdown(eingabe)
-        with st.spinner("…"):
+        with st.spinner("Antwort wird erstellt"):
             fuehre_dialog_runde()
         st.rerun()
 
 
 # =============================================================
-#  Sitzungsspeicher
+# SITZUNGSSPEICHER
 # =============================================================
 for key, default in [
     ("phase", 0),
     ("messages", []),
     ("typ", None),
+    ("baureihe", ""),
     ("optionen", []),
     ("gewichte", {}),
     ("nutzer_werte", {}),
@@ -547,229 +784,352 @@ for key, default in [
 
 
 # =============================================================
-#  KOPF + NAVIGATION
+# KOPF UND NAVIGATION
 # =============================================================
-st.title("🏭 Entscheidungsmodell: globale Produktionsnetzwerke")
+st.title("Konfiguration globaler Produktionsnetzwerke")
 
 with st.sidebar:
     st.subheader("Phasen")
-    st.caption("Bereits erreichte Phasen sind anklickbar.")
+    st.markdown("Bereits erreichte Phasen können erneut geöffnet werden.")
     for i in range(ANZAHL_PHASEN):
-        ist_aktuell = (i == st.session_state.phase)
-        erreichbar = i <= st.session_state.phase or (i <= 2 and st.session_state.typ is not None)
-        marker = "▶️" if ist_aktuell else ("✅" if i < st.session_state.phase else "▫️")
-        if st.button(f"{marker} {PHASEN[i]['titel']}", key=f"nav_{i}",
-                     disabled=not erreichbar or ist_aktuell, width="stretch"):
+        ist_aktuell = i == st.session_state.phase
+        erreichbar = i <= st.session_state.phase or (
+            i <= 2 and st.session_state.typ is not None
+        )
+        status = "Aktuell" if ist_aktuell else (
+            "Abgeschlossen" if i < st.session_state.phase else "Offen"
+        )
+        if st.button(
+            f"{status} | {PHASEN[i]['titel']}",
+            key=f"nav_{i}",
+            disabled=not erreichbar or ist_aktuell,
+            width="stretch",
+        ):
             st.session_state.phase = i
             st.rerun()
+
     st.divider()
-    if st.button("🔁 Neue Analyse starten", width="stretch"):
+    if st.button("Neue Analyse starten", width="stretch"):
         for k in list(st.session_state.keys()):
             st.session_state.pop(k, None)
         st.rerun()
 
 PHASE = st.session_state.phase
 if st.session_state.typ:
-    st.caption(f"Szenario-Typ: **{st.session_state.typ}** | Optionen: **{', '.join(st.session_state.optionen)}**")
+    kontextzeile = (
+        f"**Szenario-Typ:** {st.session_state.typ}  "
+        f"  **Baureihe:** {st.session_state.baureihe or 'nicht angegeben'}  "
+        f"  **Optionen:** {', '.join(st.session_state.optionen)}"
+    )
+    st.markdown(kontextzeile)
 
 
 # =============================================================
-#  AUTO-START-TRIGGER
+# AUTO-START-TRIGGER
 # =============================================================
 if PHASE == 0 and not st.session_state.phase0_gestartet:
     st.session_state.phase0_gestartet = True
-    with st.spinner("Starte …"):
-        st.session_state.messages.append({
-            "role": "user",
-            "content": AUTO_MARKER + " Starte Phase 0: Begruesse den Nutzer und erklaere das Vorgehen."
-        })
+    with st.spinner("Anwendung wird gestartet"):
+        st.session_state.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    AUTO_MARKER
+                    + " Starten Sie Phase 0 und erläutern Sie das Vorgehen."
+                ),
+            }
+        )
         fuehre_dialog_runde()
     st.rerun()
 
 if PHASE == 3 and not st.session_state.phase3_gestartet:
     st.session_state.phase3_gestartet = True
-    with st.spinner("Prüfe Datenlage …"):
-        st.session_state.messages.append({
-            "role": "user",
-            "content": AUTO_MARKER + " Starte Phase 3: Erklaere die Datenlage und frage die fehlenden Werte ab."
-        })
+    with st.spinner("Datenlage wird geprüft"):
+        st.session_state.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    AUTO_MARKER
+                    + " Starten Sie die Datenabfrage. Fragen Sie ausschließlich "
+                    "den ersten noch fehlenden Wert in einem Satz ab."
+                ),
+            }
+        )
         fuehre_dialog_runde()
     st.rerun()
 
 if PHASE == 6 and not st.session_state.phase6_gestartet:
     if st.session_state.basis_ergebnis is None:
-        st.warning("Es liegt noch kein Basis-Ergebnis vor. Bitte Phase 4 durchlaufen.")
+        st.warning(
+            "Es liegt noch kein Basis-Ergebnis vor. Bitte führen Sie zunächst "
+            "die Berechnung durch."
+        )
         st.stop()
     st.session_state.phase6_gestartet = True
-    with st.spinner("Erstelle die Zusammenfassung …"):
-        st.session_state.messages.append({
-            "role": "user",
-            "content": AUTO_MARKER + " Starte Phase 6: Erstelle die Abschluss-Zusammenfassung."
-        })
+    with st.spinner("Zusammenfassung wird erstellt"):
+        st.session_state.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    AUTO_MARKER
+                    + " Erstellen Sie die professionelle Abschlusszusammenfassung."
+                ),
+            }
+        )
         fuehre_dialog_runde()
     st.rerun()
 
 
 # =============================================================
-#  CHATVERLAUF
+# CHATVERLAUF
 # =============================================================
-zeige_verlauf()
+# In Phase 3 wird die aktuelle Rückfrage bewusst unterhalb der Datentabelle
+# dargestellt. In Phase 6 erscheint die aktuelle Abschlusszusammenfassung nur
+# im vorgesehenen Zusammenfassungsabschnitt.
+zeige_verlauf(letzte_assistentenantwort_auslassen=PHASE in (3, 6))
 
 
 # =============================================================
-#  OBERFLAECHE DER AKTUELLEN PHASE
+# OBERFLAECHE DER AKTUELLEN PHASE
 # =============================================================
 if PHASE == 0:
     st.divider()
-    st.markdown("**Die Phasen im Überblick:**")
-    st.dataframe([
-        {"Phase": PHASEN[i]["titel"], "Was passiert": PHASEN[i]["kurz"]}
-        for i in range(1, ANZAHL_PHASEN)
-    ], width="stretch", hide_index=True)
+    st.markdown("**Überblick über den Entscheidungsprozess**")
+    st.dataframe(
+        [
+            {"Phase": PHASEN[i]["titel"], "Inhalt": PHASEN[i]["kurz"]}
+            for i in range(1, ANZAHL_PHASEN)
+        ],
+        width="stretch",
+        hide_index=True,
+    )
 
 if PHASE == 2:
     st.divider()
     st.subheader(PHASEN[2]["titel"])
-    st.write(
-        "Lege fest, wie wichtig dir die fünf Leistungsdimensionen für diese "
-        "Entscheidung sind. Die Summe der Gewichtungen bleibt automatisch bei "
-        "100 %. Ziehst du einen Regler hoch, passen sich die anderen Regler an."
+    st.markdown(
+        "Legen Sie fest, welche Bedeutung die fünf Leistungsdimensionen für "
+        "die vorliegende Entscheidung haben. Alle Dimensionen starten mit "
+        "einer Gewichtung von 20 Prozent. Die Summe bleibt automatisch bei "
+        "100 Prozent; bei einer Änderung werden die übrigen Regler angepasst."
     )
     zeige_gewichts_slider(ALLE_DIMENSIONEN)
-    st.caption("Wenn du mit der Gewichtung fertig bist, schreibe unten im Chat z. B. »weiter«.")
+    st.markdown(
+        "Wenn Sie mit der Gewichtung einverstanden sind, teilen Sie mir im "
+        "Chat mit, dass mit der Datenabfrage fortgefahren werden kann."
+    )
 
 if PHASE == 3:
     st.divider()
     st.subheader(PHASEN[3]["titel"])
-    st.write(
-        "In dieser Phase frage ich die Daten ab. Einige Werte kann ich bereits "
-        "aus dem System ziehen; die restlichen Werte benötige ich von dir. "
-        "Die Tabelle zeigt dir transparent, welche Werte bereits vorliegen und "
-        "welche noch ergänzt werden müssen."
-    )
-    st.markdown("**Formeln und benötigte Eingaben:**")
-    st.dataframe(formel_beispiele_fuer_ui(), width="stretch", hide_index=True)
-    st.caption(
-        "Die Werte aus dem Validierungsleitfaden sind nicht im Chatbot hinterlegt. "
-        "Bitte gib die fehlenden Werte im Chat ein; die Berechnung erfolgt anschließend deterministisch im Anwendungscode."
-    )
-    rohwerte, herkunft = baue_rohwerte()
-    aktiv = aktive_kennzahlen(MATRIX, st.session_state.typ)
-    zeilen = []
-    for k in aktiv:
-        zeile = {"Dimension": KPIS[k]["dimension"], "Kennzahl": k, "Einheit": KPIS[k]["einheit"]}
-        for opt in st.session_state.optionen:
-            if k in rohwerte.get(opt, {}):
-                quelle = HERKUNFT_LABEL.get(herkunft[opt][k], "?")
-                zeile[opt] = f"{rohwerte[opt][k]} ({quelle})"
-            else:
-                zeile[opt] = "❓"
-        zeilen.append(zeile)
-    st.dataframe(zeilen, width="stretch", hide_index=True)
+
+    with st.chat_message("assistant"):
+        st.markdown(
+            "In dieser Phase werden die für das ausgewählte Szenario relevanten "
+            "Daten zusammengeführt. Ein Teil der Werte liegt bereits in den "
+            "Systemdaten vor. Die noch fehlenden Angaben frage ich anschließend "
+            "einzeln bei Ihnen ab. Die folgende Tabelle zeigt den aktuellen "
+            "Datenstand."
+        )
+
+    st.dataframe(datenuebersicht(), width="stretch", hide_index=True)
+
+    with st.expander("Berechnungsgrundlagen der ergänzten Kennzahlen"):
+        st.dataframe(
+            formel_beispiele_fuer_ui(),
+            width="stretch",
+            hide_index=True,
+        )
+        st.markdown(
+            "Die Werte aus dem Validierungsleitfaden sind nicht im Quellcode "
+            "hinterlegt. Die Berechnung der abgeleiteten Kennzahlen erfolgt "
+            "deterministisch im Anwendungscode."
+        )
+
+    zeige_aktuellen_bot_text()
 
 if PHASE == 4:
     st.divider()
     st.subheader(PHASEN[4]["titel"])
     offen = offene_werte()
     if offen:
-        st.warning("Es fehlen noch Werte (Phase 3): " + "; ".join(f"{o}: {', '.join(ks)}" for o, ks in offen.items()))
+        st.warning(
+            "Es fehlen noch Werte aus der Datenabfrage: "
+            + "; ".join(f"{o}: {', '.join(ks)}" for o, ks in offen.items())
+        )
         st.stop()
 
-    # Basis-Ergebnis bewusst einfrieren: Es geht spaeter in die PDF.
     if st.session_state.basis_ergebnis is None:
         st.session_state.basis_ergebnis = rechne()
     erg = st.session_state.basis_ergebnis
 
     st.markdown(
-        "**Normierung:** Die Berechnung unterscheidet die Wirkungsrichtung über "
-        "die Lage von Ziel- und Grenzwert. Ist der Zielwert größer als der "
-        "Grenzwert, sind höhere Werte besser. Ist der Zielwert kleiner als der "
-        "Grenzwert, sind niedrigere Werte besser. Rechnerisch wird dies durch "
-        "dieselbe Formel abgebildet: Normwert = (Istwert − Grenzwert) / "
-        "(Zielwert − Grenzwert) × 100, gedeckelt auf 0–100."
+        "**Normierung und Wirkungsrichtung:** Für Kennzahlen, bei denen der "
+        "Zielwert oberhalb des Grenzwerts liegt, führen höhere Istwerte zu "
+        "einer besseren Bewertung. Liegt der Zielwert unterhalb des "
+        "Grenzwerts, führen niedrigere Istwerte zu einer besseren Bewertung. "
+        "Für beide Wirkungsrichtungen wird jeweils die zugehörige "
+        "ziel- und grenzwertbasierte Berechnung angewendet. Werte außerhalb "
+        "des Ziel-Grenz-Bereichs werden auf 0 beziehungsweise 100 begrenzt."
     )
 
-    st.markdown("**Normwerte je Kennzahl (0–100):**")
+    st.markdown("**Normwerte der Kennzahlen**")
     aktiv = aktive_kennzahlen(MATRIX, st.session_state.typ)
     zeilen = []
     for k in aktiv:
-        zeile = {"Dimension": KPIS[k]["dimension"], "Kennzahl": k}
+        zeile = {"Leistungsdimension": KPIS[k]["dimension"], "Kennzahl": k}
         for opt in st.session_state.optionen:
-            zeile[opt] = erg["normwerte"].get(opt, {}).get(k, "—")
+            zeile[opt] = erg["normwerte"].get(opt, {}).get(k, "Nicht verfügbar")
         zeilen.append(zeile)
     st.dataframe(zeilen, width="stretch", hide_index=True)
 
-    st.markdown("**Dimensions-Scores** (Mittelwert der Normwerte je Dimension):")
+    st.markdown("**Werte der Leistungsdimensionen**")
     zeilen = []
     for d in ALLE_DIMENSIONEN:
-        zeile = {"Dimension": d, "Gewicht": f"{erg['gewichte'].get(d, 0)*100:.0f} %"}
+        zeile = {
+            "Leistungsdimension": d,
+            "Gewichtung": f"{erg['gewichte'].get(d, 0) * 100:.0f} %",
+        }
         for opt in st.session_state.optionen:
-            zeile[opt] = erg["dim_scores"].get(opt, {}).get(d, "—")
+            zeile[opt] = erg["dim_scores"].get(opt, {}).get(d, "Nicht verfügbar")
         zeilen.append(zeile)
     st.dataframe(zeilen, width="stretch", hide_index=True)
 
-    st.markdown("**Nutzwerte** (= Σ Gewicht × Dimensions-Score):")
-    st.dataframe([
-        {"Rang": erg["raenge"][o], "Option": o, "Nutzwert": erg["nutzwerte"][o]}
-        for o in sorted(erg["nutzwerte"], key=erg["nutzwerte"].get, reverse=True)
-    ], width="stretch", hide_index=True)
-    st.info(f"Empfehlung nach initialer Gewichtung: **{erg['empfehlung']}**")
-    st.caption("Wenn du zur Sensitivitätsanalyse wechseln möchtest, schreibe unten im Chat z. B. »weiter«.")
+    st.markdown("**Gesamtnutzwerte**")
+    st.dataframe(
+        [
+            {
+                "Rang": erg["raenge"][o],
+                "Option": o,
+                "Nutzwert": erg["nutzwerte"][o],
+            }
+            for o in sorted(
+                erg["nutzwerte"],
+                key=erg["nutzwerte"].get,
+                reverse=True,
+            )
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    st.info(
+        f"Empfehlung auf Grundlage der initialen Gewichtung: {erg['empfehlung']}"
+    )
+    st.markdown(
+        "Wenn Sie mit der dargestellten Berechnung fortfahren möchten, teilen "
+        "Sie mir im Chat mit, dass die Sensitivitätsanalyse begonnen werden kann."
+    )
 
 if PHASE == 5:
     st.divider()
     st.subheader(PHASEN[5]["titel"])
     if st.session_state.basis_ergebnis is None:
-        st.warning("Es liegt noch kein Basis-Ergebnis vor. Bitte Phase 4 durchlaufen.")
+        st.warning(
+            "Es liegt noch kein Basis-Ergebnis vor. Bitte führen Sie zunächst "
+            "die Berechnung durch."
+        )
         st.stop()
 
-    st.write(
-        "Verändere die Gewichtung und berechne das Ergebnis neu. So prüfst du, "
-        "ob die Empfehlung stabil bleibt. Die ursprüngliche Gewichtung aus "
-        "Phase 2 bleibt für die Ergebnis-PDF gespeichert."
+    st.markdown(
+        "Verändern Sie die Gewichtungen und berechnen Sie das Ergebnis erneut. "
+        "Auf diese Weise prüfen Sie, ob die Empfehlung bei unterschiedlichen "
+        "Prioritäten stabil bleibt. Die ursprüngliche Gewichtung bleibt für "
+        "die Abschlussdokumentation unverändert gespeichert."
     )
 
-    # Sensitivitaetsanalyse startet mit der initialen Gewichtung.
     if "sensitivitaet_gewichte" not in st.session_state:
-        st.session_state.sensitivitaet_gewichte = dict(st.session_state.basis_ergebnis["gewichte"])
+        st.session_state.sensitivitaet_gewichte = dict(
+            st.session_state.basis_ergebnis["gewichte"]
+        )
         setze_slider_aus_gewichten(st.session_state.sensitivitaet_gewichte)
 
     st.session_state.gewichte = st.session_state.sensitivitaet_gewichte
-    zeige_gewichts_slider(ALLE_DIMENSIONEN, ziel_key="sensitivitaet_gewichte")
+    zeige_gewichts_slider(
+        ALLE_DIMENSIONEN,
+        ziel_key="sensitivitaet_gewichte",
+    )
 
-    if st.button("🔄 Neu berechnen"):
-        st.session_state.sensitivitaet_ergebnis = rechne_mit_gewichten(st.session_state.sensitivitaet_gewichte)
+    if st.button("Ergebnis neu berechnen"):
+        st.session_state.sensitivitaet_ergebnis = rechne_mit_gewichten(
+            st.session_state.sensitivitaet_gewichte
+        )
         st.rerun()
 
     erg = st.session_state.sensitivitaet_ergebnis or st.session_state.basis_ergebnis
-    st.dataframe([
-        {"Rang": erg["raenge"][o], "Option": o, "Nutzwert": erg["nutzwerte"][o]}
-        for o in sorted(erg["nutzwerte"], key=erg["nutzwerte"].get, reverse=True)
-    ], width="stretch", hide_index=True)
-    st.info(f"Aktuelle Empfehlung im Sensitivitätstest: **{erg['empfehlung']}**")
-    st.caption(
-        "Wenn du mehrere Gewichtungen getestet hast, schreibe im Chat, ob du "
-        "das Ergebnis als robust oder nicht robust bewertest. Diese Einschätzung "
-        "wird in der Zusammenfassung dokumentiert."
+    st.dataframe(
+        [
+            {
+                "Rang": erg["raenge"][o],
+                "Option": o,
+                "Nutzwert": erg["nutzwerte"][o],
+            }
+            for o in sorted(
+                erg["nutzwerte"],
+                key=erg["nutzwerte"].get,
+                reverse=True,
+            )
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+    st.info(f"Aktuelle Empfehlung im Sensitivitätstest: {erg['empfehlung']}")
+    st.markdown(
+        "Nachdem Sie mehrere Gewichtungen geprüft haben, teilen Sie mir im "
+        "Chat mit, ob Sie das Ergebnis als robust oder nicht robust bewerten. "
+        "Diese Einschätzung wird in der Zusammenfassung dokumentiert."
     )
 
 if PHASE == 6 and st.session_state.basis_ergebnis:
     st.divider()
+    st.subheader(PHASEN[6]["titel"])
+    erg = st.session_state.basis_ergebnis
+
+    st.markdown("**Gewichtungen der Leistungsdimensionen**")
+    st.dataframe(
+        [
+            {
+                "Leistungsdimension": d,
+                "Gewichtung": f"{g * 100:.0f} %",
+            }
+            for d, g in erg["gewichte"].items()
+        ],
+        width="stretch",
+        hide_index=True,
+    )
+
+    st.markdown("**Finale Werte der Leistungsdimensionen**")
+    zeilen = []
+    for d in erg["gewichte"]:
+        zeile = {"Leistungsdimension": d}
+        for opt in st.session_state.optionen:
+            zeile[opt] = erg["dim_scores"].get(opt, {}).get(d, "Nicht verfügbar")
+        zeilen.append(zeile)
+    st.dataframe(zeilen, width="stretch", hide_index=True)
+
+    st.markdown("**Textliche Zusammenfassung des Vorgehens und der Ergebnisse**")
+    zeige_aktuellen_bot_text()
+
     pdf_bytes = erstelle_ergebnis_pdf(
-        st.session_state.basis_ergebnis,
+        erg,
         letzter_bot_text(),
         st.session_state.typ or "",
+        st.session_state.baureihe or "",
         st.session_state.optionen,
         KPIS,
-        aktive_kennzahlen(MATRIX, st.session_state.typ) if st.session_state.typ else [],
+        aktive_kennzahlen(MATRIX, st.session_state.typ)
+        if st.session_state.typ
+        else [],
         st.session_state.robustheit,
     )
-    st.download_button("📄 Ergebnis-PDF herunterladen", data=pdf_bytes,
-                       file_name="entscheidungsempfehlung.pdf",
-                       mime="application/pdf")
+    st.download_button(
+        "Ergebnis-PDF herunterladen",
+        data=pdf_bytes,
+        file_name="entscheidungsempfehlung_produktionsnetzwerk.pdf",
+        mime="application/pdf",
+    )
 
 
 # =============================================================
-#  EINGABEZEILE
+# EINGABEZEILE
 # =============================================================
 chat_eingabe()

@@ -6,13 +6,10 @@ niemals im Sprachmodell ("LLM as orchestrator, not as calculator").
 
 NORMIERUNG (Ziel-/Grenzwert-Verfahren, Skala 0-100)
 ---------------------------------------------------
-    Normwert = (Istwert - Grenzwert) / (Zielwert - Grenzwert) * 100
-
-Diese eine Formel deckt beide Richtungen ab:
-  - hoeher ist besser:  Zielwert > Grenzwert  -> besserer Istwert => hoeherer Normwert
-  - geringer ist besser: Zielwert < Grenzwert -> kleinerer Istwert => hoeherer Normwert
-Normwerte werden auf [0, 100] gedeckelt (Werte ausserhalb des
-Ziel-Grenz-Korridors zaehlen als 0 bzw. 100).
+Die Wirkungsrichtung wird explizit unterschieden:
+  - Zielwert > Grenzwert: hoehere Werte sind besser.
+  - Zielwert < Grenzwert: niedrigere Werte sind besser.
+Normwerte werden auf [0, 100] gedeckelt.
 
 AGGREGATION
 -----------
@@ -32,15 +29,30 @@ from typing import Dict
 
 
 def normiere(istwert: float, zielwert: float, grenzwert: float) -> float:
-    """Ziel-/Grenzwert-Normierung auf [0, 100], gedeckelt.
+    """Ziel-/Grenzwert-Normierung auf [0, 100].
 
-    Normwert = (Ist - Grenz) / (Ziel - Grenz) * 100
+    Die Berechnung wird explizit nach der Wirkungsrichtung unterschieden:
+    - Zielwert > Grenzwert: hoehere Werte sind besser.
+    - Zielwert < Grenzwert: niedrigere Werte sind besser.
+
+    Werte ausserhalb des Ziel-Grenz-Bereichs werden auf 0 bzw. 100 gedeckelt.
     """
-    spanne = zielwert - grenzwert
-    if spanne == 0:
+    if zielwert == grenzwert:
         return 100.0 if istwert == zielwert else 0.0
-    norm = (istwert - grenzwert) / spanne * 100.0
-    return max(0.0, min(norm, 100.0))
+
+    if zielwert > grenzwert:
+        if istwert <= grenzwert:
+            return 0.0
+        if istwert >= zielwert:
+            return 100.0
+        return (istwert - grenzwert) / (zielwert - grenzwert) * 100.0
+
+    # Zielwert < Grenzwert: geringere Werte sind besser.
+    if istwert <= zielwert:
+        return 100.0
+    if istwert >= grenzwert:
+        return 0.0
+    return (grenzwert - istwert) / (grenzwert - zielwert) * 100.0
 
 
 def renormiere_gewichte(gewichte: Dict[str, float]) -> Dict[str, float]:
