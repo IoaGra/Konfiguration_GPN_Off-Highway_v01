@@ -1245,9 +1245,11 @@ def baue_system_prompt() -> str:
             )
     elif phase == 2:
         phasenanweisung = (
-            "Die Gewichtung erfolgt über Schieberegler; ihre Summe beträgt 100 Prozent. "
-            "Beschreiben Sie eine Leistungsdimension nur auf Wunsch. Wenn die nutzende "
-            "Person die Gewichtung bestätigt, rufen Sie naechste_phase auf."
+            "Die Gewichtung wird ausschließlich über die sichtbaren Schieberegler der "
+            "Benutzeroberfläche eingestellt; ihre Summe beträgt 100 Prozent. Fordern Sie "
+            "niemals dazu auf, Gewichtungswerte im Chat einzugeben. Beantworten Sie nur "
+            "Rückfragen zu den Leistungsdimensionen kurz. Die Bestätigung zum Fortfahren "
+            "wird von der Anwendung selbst verarbeitet."
         )
     elif phase == 4:
         phasenanweisung = (
@@ -1293,7 +1295,7 @@ Aktuelle Phase {phase}: {PHASEN[phase]['titel']}
 def tool_definitionen() -> list[dict]:
     werkzeuge: list[dict] = []
     phase = st.session_state.phase
-    if phase in (0, 2, 4):
+    if phase in (0, 4):
         werkzeuge.append(
             {
                 "name": "naechste_phase",
@@ -1522,6 +1524,38 @@ def fuehre_dialog_runde():
             return
 
 
+def _bestaetigt_gewichtung(eingabe: str) -> bool:
+    """Erkennt nur eine Bestätigung zum Fortfahren, keine Gewichtseingaben."""
+    text = re.sub(r"[^a-zäöüß ]", " ", eingabe.lower())
+    text = re.sub(r"\s+", " ", text).strip()
+    signale = (
+        "weiter",
+        "fortfahren",
+        "weitergehen",
+        "weiter machen",
+        "weitermachen",
+        "gewichtung übernehmen",
+        "gewichtung passt",
+        "so passt es",
+        "ist fertig",
+        "bin fertig",
+        "kann weitergehen",
+        "kann weiter gehen",
+    )
+    return any(signal in text for signal in signale)
+
+
+def _uebernehme_slider_gewichtung():
+    """Überträgt die aktuell sichtbaren Reglerwerte sicher in den Sitzungsspeicher."""
+    st.session_state.gewichte = {
+        dimension: st.session_state.get(
+            f"basis_{dimension}",
+            round(st.session_state.gewichte.get(dimension, 0.0) * 100),
+        ) / 100.0
+        for dimension in ALLE_DIMENSIONEN
+    }
+
+
 def chat_eingabe(platzhalter: str = "Ihre Antwort"):
     eingabe = st.chat_input(platzhalter)
     if not eingabe:
@@ -1529,7 +1563,12 @@ def chat_eingabe(platzhalter: str = "Ihre Antwort"):
     st.session_state.messages.append({"role": "user", "content": eingabe})
     with st.chat_message("user"):
         st.markdown(eingabe)
-    if st.session_state.phase == 3:
+
+    if st.session_state.phase == 2 and _bestaetigt_gewichtung(eingabe):
+        _uebernehme_slider_gewichtung()
+        st.session_state.phase = 3
+        st.session_state.phase3_gestartet = False
+    elif st.session_state.phase == 3:
         verarbeite_phase3_eingabe(eingabe)
     else:
         with st.spinner("Antwort wird erstellt"):
@@ -1665,8 +1704,8 @@ if PHASE == 2:
     )
     zeige_gewichts_slider(ALLE_DIMENSIONEN, "gewichte", "basis")
     st.markdown(
-        "Wenn Sie mit der Gewichtung einverstanden sind, teilen Sie mir im Chat "
-        "mit, dass mit der Datenerfassung fortgefahren werden kann."
+        "Stellen Sie die Gewichtungen ausschließlich über die Schieberegler ein. "
+        "Wenn Sie fertig sind, schreiben Sie im Chat beispielsweise „weiter“."
     )
 
 if PHASE == 3:
