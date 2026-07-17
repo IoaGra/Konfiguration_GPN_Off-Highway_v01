@@ -39,7 +39,7 @@ PHASEN = {
         "kurz": "Normalisierung, Aggregation und Rangbildung.",
         "beschreibung": (
             "Die Kennzahlen werden normalisiert, zu Leistungsdimensionen "
-            "aggregiert und zu Gesamtnutzwerten zusammengeführt."
+            "aggregiert und zu Gesamtpunktzahlen zusammengeführt."
         ),
     },
     5: {

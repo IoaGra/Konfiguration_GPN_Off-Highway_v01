@@ -87,6 +87,8 @@ def _styles():
             fontSize=9.3,
             leading=13,
             spaceAfter=6,
+            wordWrap="LTR",
+            splitLongWords=False,
         )
     )
     stile.add(
@@ -124,7 +126,8 @@ def _styles():
             parent=stile["Normal"],
             fontSize=7.8,
             leading=9.8,
-            wordWrap="CJK",
+            wordWrap="LTR",
+            splitLongWords=False,
         )
     )
     return stile
@@ -251,7 +254,7 @@ def _normalisiere_robustheit(robustheit) -> Optional[Dict]:
 def _entscheidungserlaeuterung(ergebnis: dict) -> str:
     nutzwerte = ergebnis.get("nutzwerte", {})
     if not nutzwerte:
-        return "Es liegen keine berechneten Gesamtnutzwerte vor."
+        return "Es liegen keine berechneten Gesamtpunktzahlen vor."
 
     sortiert = sorted(nutzwerte, key=nutzwerte.get, reverse=True)
     beste = sortiert[0]
@@ -590,7 +593,7 @@ def erstelle_ergebnis_pdf(
     rest = breite - 7.0
     story.append(_tabelle(daten, [7.0 * cm] + [rest / max(len(optionen), 1) * cm] * len(optionen), stile))
 
-    story.append(Paragraph("3. Berechnung der Gesamtnutzwerte", stile["ZwischenTitel"]))
+    story.append(Paragraph("3. Berechnung der Gesamtpunktzahlen", stile["ZwischenTitel"]))
     story.append(
         Paragraph(
             "Die Dimensionswerte werden mit den initialen Gewichtungen "
@@ -600,7 +603,7 @@ def erstelle_ergebnis_pdf(
     )
     story.append(_formelbox_math([r"G_s=\sum_{l=1}^{5}g_l\cdot P_{s,l}"]))
     story.append(Spacer(1, 5))
-    ranking = [["Rang", "Alternative", "Gesamtnutzwert"]]
+    ranking = [["Rang", "Alternative", "Gesamtpunktzahl"]]
     for option in sorted(ergebnis.get("nutzwerte", {}), key=ergebnis.get("nutzwerte", {}).get, reverse=True):
         ranking.append([str(ergebnis["raenge"][option]), option, f"{ergebnis['nutzwerte'][option]:.2f}"])
     story.append(_tabelle(ranking, [2.0 * cm, 10.4 * cm, 5.8 * cm], stile))
@@ -642,7 +645,7 @@ def erstelle_ergebnis_pdf(
 
     story.append(Paragraph("Kurze Einordnung", stile["ZwischenTitel"]))
     story.append(Paragraph(escape(_entscheidungserlaeuterung(ergebnis)), stile["Fliess"]))
-    for abschnitt in _text_abschnitte(bot_text)[:2]:
+    for abschnitt in _text_abschnitte(bot_text):
         story.append(Paragraph(escape(abschnitt), stile["Fliess"]))
 
     story.append(Paragraph("Weitere zu berücksichtigende Aspekte", stile["ZwischenTitel"]))

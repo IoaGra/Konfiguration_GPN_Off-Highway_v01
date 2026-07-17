@@ -24,7 +24,6 @@ from kennzahlenberechnung import (
     berechne_formel_kennzahl,
     faktor_information,
     faktoren_fuer,
-    formel_uebersicht_fuer_ui,
     ist_formel_kennzahl,
     naechster_fehlender_faktor,
 )
@@ -259,7 +258,7 @@ st.markdown(
         width: 100%;
         max-width: 100%;
         border-collapse: collapse;
-        table-layout: fixed;
+        table-layout: auto;
         margin: 0 auto;
         color: var(--text);
         background: var(--surface);
@@ -302,7 +301,7 @@ st.markdown(
     }
 
     table.app-table .narrow-column {
-        min-width: 4.5rem;
+        min-width: 5.5rem;
         white-space: nowrap !important;
         text-align: center;
     }
@@ -579,6 +578,17 @@ def _block_attr(block, name):
     return block.get(name) if isinstance(block, dict) else getattr(block, name, None)
 
 
+def _assistant_hat_tool_use(nachricht: dict) -> bool:
+    return (
+        nachricht.get("role") == "assistant"
+        and isinstance(nachricht.get("content"), list)
+        and any(
+            _block_attr(block, "type") == "tool_use"
+            for block in nachricht["content"]
+        )
+    )
+
+
 def _index_letzte_assistentennachricht() -> Optional[int]:
     for index in range(len(st.session_state.messages) - 1, -1, -1):
         nachricht = st.session_state.messages[index]
@@ -603,6 +613,10 @@ def zeige_verlauf(letzte_assistentenantwort_auslassen: bool = False):
                 with st.chat_message("user"):
                     st.markdown(inhalt)
         elif nachricht["role"] == "assistant" and isinstance(nachricht["content"], list):
+            # Text, der zusammen mit einem Werkzeugaufruf erzeugt wurde, bleibt
+            # unsichtbar. Dadurch erscheint pro Nutzereingabe nur eine Antwort.
+            if _assistant_hat_tool_use(nachricht):
+                continue
             for block in nachricht["content"]:
                 if _block_attr(block, "type") == "text":
                     text = _block_attr(block, "text")
@@ -614,6 +628,8 @@ def zeige_verlauf(letzte_assistentenantwort_auslassen: bool = False):
 def letzter_bot_text() -> str:
     for nachricht in reversed(st.session_state.messages):
         if nachricht["role"] == "assistant" and isinstance(nachricht["content"], list):
+            if _assistant_hat_tool_use(nachricht):
+                continue
             texte = [
                 _block_attr(block, "text")
                 for block in nachricht["content"]
@@ -678,7 +694,7 @@ def _spaltenbreiten(spalten: list[str], zeilen: list[dict]) -> list[float]:
             laengen.append(len(_tabellenwert(zeile.get(spalte, ""))))
         maximale_laenge = max(laengen)
         if spalte in {"Nr.", "Rang"}:
-            gewicht = max(6, len(spalte) + 2)
+            gewicht = max(9, len(spalte) + 4)
         else:
             gewicht = max(len(spalte) + 2, min(maximale_laenge + 1, 34))
         gewichte.append(float(gewicht))
@@ -757,11 +773,10 @@ def datenuebersicht() -> list[dict]:
     return zeilen
 
 
-def _deutsche_zahl_lesen(text: str) -> Optional[float]:
-    treffer = re.findall(r"[-+]?\d[\d. ]*(?:,\d+)?", text or "")
-    if not treffer:
+def _zahl_token_lesen(token: str) -> Optional[float]:
+    token = str(token or "").strip().replace(" ", "")
+    if not token:
         return None
-    token = treffer[-1].strip().replace(" ", "")
     try:
         if "," in token:
             token = token.replace(".", "").replace(",", ".")
@@ -774,6 +789,46 @@ def _deutsche_zahl_lesen(text: str) -> Optional[float]:
         return float(token)
     except (TypeError, ValueError):
         return None
+
+
+def _deutsche_zahlen_lesen(text: str) -> list[float]:
+    treffer = re.findall(r"[-+]?\d[\d. ]*(?:,\d+)?", text or "")
+    werte = []
+    for treffer_text in treffer:
+        wert = _zahl_token_lesen(treffer_text)
+        if wert is not None:
+            werte.append(wert)
+    return werte
+
+
+def _deutsche_zahl_lesen(text: str) -> Optional[float]:
+    werte = _deutsche_zahlen_lesen(text)
+    return werte[-1] if werte else None
+
+
+def _alias_im_text(normierter_text: str, alias: str) -> bool:
+    muster = r"(?<![a-z0-9])" + re.escape(_norm_text(alias)) + r"(?![a-z0-9])"
+    return re.search(muster, normierter_text) is not None
+
+
+def _wert_nahe_alias(text: str, aliases: tuple[str, ...]) -> Optional[float]:
+    normiert = _norm_text(text)
+    zahlenmuster = r"[-+]?\d[\d. ]*(?:,\d+)?"
+    for alias in aliases:
+        alias_norm = _norm_text(alias)
+        muster = r"(?<![a-z0-9])" + re.escape(alias_norm) + r"(?![a-z0-9])"
+        treffer = re.search(muster, normiert)
+        if not treffer:
+            continue
+        danach = normiert[treffer.end():treffer.end() + 90]
+        zahl_danach = re.search(zahlenmuster, danach)
+        if zahl_danach:
+            return _zahl_token_lesen(zahl_danach.group(0))
+        davor = normiert[max(0, treffer.start() - 55):treffer.start()]
+        zahlen_davor = re.findall(zahlenmuster, davor)
+        if zahlen_davor:
+            return _zahl_token_lesen(zahlen_davor[-1])
+    return None
 
 
 def _wert_ist_plausibel(kennzahl: str, wert: Optional[float]) -> bool:
@@ -833,22 +888,15 @@ def _naechste_phase3_aktion():
             if kennzahl in rohwerte.get(name, {}):
                 continue
             if ist_formel_kennzahl(kennzahl, datenoption):
-                modus = _modus(name, kennzahl)
-                if modus is None:
-                    return ("modus", name, kennzahl, None)
-                if modus == "direkt":
-                    return ("wert", name, kennzahl, None)
+                if _aktualisiere_berechneten_wert(name, kennzahl):
+                    rohwerte, _ = baue_rohwerte()
+                    continue
                 faktor = naechster_fehlender_faktor(
                     kennzahl,
                     _faktoren(name, kennzahl),
                     datenoption,
                 )
-                if faktor:
-                    return ("faktor", name, kennzahl, faktor)
-                if _aktualisiere_berechneten_wert(name, kennzahl):
-                    rohwerte, _ = baue_rohwerte()
-                    continue
-                return ("faktor", name, kennzahl, faktoren_fuer(kennzahl, datenoption)[0][0])
+                return ("formel", name, kennzahl, faktor)
             return ("wert", name, kennzahl, None)
     return None
 
@@ -858,24 +906,26 @@ def _frage_fuer_aktion(aktion) -> str:
     alternative = alternative_nach_name(alt_name) or {}
     datenoption = alternative.get("datenoption", "")
     einheit = KPIS.get(kennzahl, {}).get("einheit", "")
-    if art == "modus":
-        teilwerte = ", ".join(
-            bezeichnung
-            for _, bezeichnung, _ in faktoren_fuer(kennzahl, datenoption)
-        )
+    if art == "formel":
+        vorhandene = _faktoren(alt_name, kennzahl)
+        fehlende = [
+            (schluessel, bezeichnung, faktor_einheit)
+            for schluessel, bezeichnung, faktor_einheit
+            in faktoren_fuer(kennzahl, datenoption)
+            if schluessel not in vorhandene
+        ]
+        bezeichnungen = [bezeichnung for _, bezeichnung, _ in fehlende]
+        if len(bezeichnungen) > 1:
+            teilwert_text = ", ".join(bezeichnungen[:-1]) + " und " + bezeichnungen[-1]
+            zusatz = " Sie können beide Werte in einer Nachricht angeben."
+        else:
+            teilwert_text = bezeichnungen[0] if bezeichnungen else "die noch fehlenden Teilwerte"
+            zusatz = ""
         return (
-            f"Für die Kennzahl {kennzahl} der Alternative {alt_name} können Sie "
-            f"den Istwert direkt angeben oder ihn aus {teilwerte} berechnen lassen. "
-            "Möchten Sie den Rohwert direkt angeben oder die Berechnung durchführen?"
+            f"Für die Kennzahl {kennzahl} der Alternative {alt_name} benötige "
+            f"ich {teilwert_text}.{zusatz} Falls Ihnen {kennzahl} bereits als "
+            "fertiger Istwert vorliegt, können Sie diesen auch direkt angeben."
         )
-    if art == "faktor":
-        info = faktor_information(kennzahl, faktor, datenoption)
-        if info:
-            bezeichnung, faktor_einheit = info
-            return (
-                f"Wie hoch ist {bezeichnung} für die Alternative {alt_name} "
-                f"in {faktor_einheit}?"
-            )
     return (
         f"Welchen Istwert möchten Sie für {kennzahl} der Alternative "
         f"{alt_name} in {einheit} angeben?"
@@ -917,65 +967,71 @@ def _alternative_aus_text(text: str, aktuelle_aktion=None) -> Optional[str]:
 
 
 def _versuche_benannte_aenderung(text: str, aktuelle_aktion=None) -> Optional[str]:
-    """Verarbeitet benannte Werte und Korrekturen innerhalb von Phase 3."""
+    """Speichert eine oder mehrere eindeutig benannte Angaben aus einer Nachricht."""
     normiert = _norm_text(text)
-    wert = _deutsche_zahl_lesen(text)
-    if wert is None:
-        return None
+    alt_name = _alternative_aus_text(text, aktuelle_aktion)
+    meldungen = []
 
-    faktor_aliasse = [
-        ("fertigungseinzelkosten", "Fertigungskosten", "fertigungseinzelkosten_pro_einheit"),
-        ("bearbeitungszeit", "Produktionsdurchlaufzeit", "bearbeitungszeit"),
-        ("liegezeit", "Produktionsdurchlaufzeit", "liegezeit"),
-        ("gesamtenergieverbrauch", "Anteil erneuerbarer Energien", "gesamtenergieverbrauch"),
+    faktor_definitionen = [
+        (("fertigungseinzelkosten", "fertigungseinzelkosten pro produktionseinheit"),
+         "Fertigungskosten", "fertigungseinzelkosten_pro_einheit", "Fertigungseinzelkosten"),
+        (("bearbeitungszeit",), "Produktionsdurchlaufzeit", "bearbeitungszeit", "Bearbeitungszeit"),
+        (("liegezeit",), "Produktionsdurchlaufzeit", "liegezeit", "Liegezeit"),
+        (("gesamtenergieverbrauch", "energieverbrauch"),
+         "Anteil erneuerbarer Energien", "gesamtenergieverbrauch", "Gesamtenergieverbrauch"),
     ]
-    kennzahl_aliasse = [
+    direkte_definitionen = [
         (("produktionsdurchlaufzeit", "durchlaufzeit"), "Produktionsdurchlaufzeit"),
-        (("anteil erneuerbarer energien", "anteil erneuerbarer energie"), "Anteil erneuerbarer Energien"),
-        (("qualitaetsrate",), "Qualitätsrate"),
+        (("anteil erneuerbarer energien", "anteil erneuerbarer energie"),
+         "Anteil erneuerbarer Energien"),
+        (("qualitaetsrate", "qualitätsrate"), "Qualitätsrate"),
         (("fertigungskosten",), "Fertigungskosten"),
     ]
 
-    alt_name = _alternative_aus_text(text, aktuelle_aktion)
-
-    for alias, kennzahl, faktor in faktor_aliasse:
-        if alias not in normiert:
+    for aliases, kennzahl, faktor, bezeichnung in faktor_definitionen:
+        if not any(_alias_im_text(normiert, alias) for alias in aliases):
             continue
-        if not alt_name:
+        wert = _wert_nahe_alias(text, aliases)
+        if wert is None or wert <= 0:
+            continue
+        ziel_alt = alt_name
+        if not ziel_alt:
             kandidaten = [
                 alt["name"] for alt in st.session_state.alternativen
                 if ist_formel_kennzahl(kennzahl, alt["datenoption"])
             ]
             if len(kandidaten) == 1:
-                alt_name = kandidaten[0]
-        alternative = alternative_nach_name(alt_name or "")
+                ziel_alt = kandidaten[0]
+        alternative = alternative_nach_name(ziel_alt or "")
         if not alternative or not ist_formel_kennzahl(kennzahl, alternative["datenoption"]):
-            return None
-        if wert <= 0:
-            return "Der genannte Korrekturwert ist nicht plausibel."
-        _setze_modus(alt_name, kennzahl, "berechnen")
-        _faktoren(alt_name, kennzahl)[faktor] = float(wert)
-        _aktualisiere_berechneten_wert(alt_name, kennzahl)
-        return f"Der Teilwert {alias} für {alt_name} wurde auf {_tabellenwert(wert)} korrigiert."
-
-    for aliases, kennzahl in kennzahl_aliasse:
-        if not any(alias in normiert for alias in aliases):
             continue
-        if not alt_name:
+        _setze_modus(ziel_alt, kennzahl, "berechnen")
+        _faktoren(ziel_alt, kennzahl)[faktor] = float(wert)
+        _aktualisiere_berechneten_wert(ziel_alt, kennzahl)
+        meldungen.append(f"{bezeichnung} für {ziel_alt}: {_tabellenwert(wert)}")
+
+    for aliases, kennzahl in direkte_definitionen:
+        if not any(_alias_im_text(normiert, alias) for alias in aliases):
+            continue
+        wert = _wert_nahe_alias(text, aliases)
+        if wert is None or not _wert_ist_plausibel(kennzahl, wert):
+            continue
+        ziel_alt = alt_name
+        if not ziel_alt:
             kandidaten = [
                 alt["name"] for alt in st.session_state.alternativen
                 if kennzahl in aktive_kennzahlen_alternative(alt)
             ]
             if len(kandidaten) == 1:
-                alt_name = kandidaten[0]
-        if not alt_name or not alternative_nach_name(alt_name):
-            return None
-        if not _wert_ist_plausibel(kennzahl, wert):
-            return "Der genannte Korrekturwert ist nicht plausibel."
-        _speichere_direktwert(alt_name, kennzahl, wert)
-        return f"Der Istwert {kennzahl} für {alt_name} wurde auf {_tabellenwert(wert)} korrigiert."
+                ziel_alt = kandidaten[0]
+        if not ziel_alt or not alternative_nach_name(ziel_alt):
+            continue
+        _speichere_direktwert(ziel_alt, kennzahl, wert)
+        meldungen.append(f"{kennzahl} für {ziel_alt}: {_tabellenwert(wert)}")
 
-    return None
+    if not meldungen:
+        return None
+    return "Gespeichert: " + "; ".join(meldungen) + "."
 
 
 def _naechste_frage_oder_bestaetigung(prefix: str = "") -> str:
@@ -992,10 +1048,10 @@ def _naechste_frage_oder_bestaetigung(prefix: str = "") -> str:
 
 def verarbeite_phase3_eingabe(eingabe: str):
     aktuelle_aktion = _naechste_phase3_aktion()
-    benannte_aenderung = _versuche_benannte_aenderung(eingabe, aktuelle_aktion)
-    if benannte_aenderung:
+    benannte_angaben = _versuche_benannte_aenderung(eingabe, aktuelle_aktion)
+    if benannte_angaben:
         _assistententext_hinzufuegen(
-            _naechste_frage_oder_bestaetigung(benannte_aenderung)
+            _naechste_frage_oder_bestaetigung(benannte_angaben)
         )
         return
 
@@ -1017,48 +1073,60 @@ def verarbeite_phase3_eingabe(eingabe: str):
     alternative = alternative_nach_name(alt_name) or {}
     datenoption = alternative.get("datenoption", "")
     normiert = _norm_text(eingabe)
+    zahlen = _deutsche_zahlen_lesen(eingabe)
 
-    if art == "modus":
-        direkt = any(wort in normiert for wort in ("direkt", "rohwert", "istwert"))
-        berechnen = any(wort in normiert for wort in ("berechn", "teilwert", "faktor"))
-        if direkt and not berechnen:
-            _setze_modus(alt_name, kennzahl, "direkt")
-            wert = _deutsche_zahl_lesen(eingabe)
-            if _wert_ist_plausibel(kennzahl, wert):
-                _speichere_direktwert(alt_name, kennzahl, float(wert))
-            _assistententext_hinzufuegen(_naechste_frage_oder_bestaetigung())
-            return
-        if berechnen:
-            _setze_modus(alt_name, kennzahl, "berechnen")
-            wert = _deutsche_zahl_lesen(eingabe)
-            erster_faktor = naechster_fehlender_faktor(kennzahl, {}, datenoption)
-            if erster_faktor and wert is not None and wert > 0:
-                _faktoren(alt_name, kennzahl)[erster_faktor] = float(wert)
-                _aktualisiere_berechneten_wert(alt_name, kennzahl)
-            _assistententext_hinzufuegen(_naechste_frage_oder_bestaetigung())
-            return
-        _assistententext_hinzufuegen(
-            "Bitte geben Sie an, ob Sie den Istwert direkt bereitstellen oder "
-            "die Kennzahl aus Teilwerten berechnen lassen möchten."
+    if art == "formel":
+        direkte_signale = ("direkt", "rohwert", "istwert")
+        kpi_aliasse = {
+            "Fertigungskosten": ("fertigungskosten",),
+            "Produktionsdurchlaufzeit": ("produktionsdurchlaufzeit", "durchlaufzeit"),
+            "Anteil erneuerbarer Energien": (
+                "anteil erneuerbarer energien",
+                "anteil erneuerbarer energie",
+            ),
+        }.get(kennzahl, ())
+        direkte_eingabe = any(signal in normiert for signal in direkte_signale)
+        direkte_eingabe = direkte_eingabe or any(
+            _alias_im_text(normiert, alias) for alias in kpi_aliasse
         )
+        if direkte_eingabe and zahlen:
+            wert = zahlen[-1]
+            if not _wert_ist_plausibel(kennzahl, wert):
+                _assistententext_hinzufuegen(
+                    "Der genannte Istwert ist nicht plausibel. " + _frage_fuer_aktion(aktuelle_aktion)
+                )
+                return
+            _speichere_direktwert(alt_name, kennzahl, wert)
+            _assistententext_hinzufuegen(_naechste_frage_oder_bestaetigung())
+            return
+
+        fehlende = [
+            schluessel
+            for schluessel, _, _ in faktoren_fuer(kennzahl, datenoption)
+            if schluessel not in _faktoren(alt_name, kennzahl)
+        ]
+        if not zahlen:
+            _assistententext_hinzufuegen(
+                "Die Eingabe konnte nicht eindeutig als Zahlenwert verarbeitet werden. "
+                + _frage_fuer_aktion(aktuelle_aktion)
+            )
+            return
+        _setze_modus(alt_name, kennzahl, "berechnen")
+        for schluessel, wert in zip(fehlende, zahlen):
+            if wert > 0:
+                _faktoren(alt_name, kennzahl)[schluessel] = float(wert)
+        _aktualisiere_berechneten_wert(alt_name, kennzahl)
+        _assistententext_hinzufuegen(_naechste_frage_oder_bestaetigung())
         return
 
     wert = _deutsche_zahl_lesen(eingabe)
-    plausibel = (wert is not None and wert > 0) if art == "faktor" else _wert_ist_plausibel(kennzahl, wert)
-    if not plausibel:
+    if not _wert_ist_plausibel(kennzahl, wert):
         _assistententext_hinzufuegen(
-            "Die Eingabe konnte nicht eindeutig als plausibler Zahlenwert "
-            f"verarbeitet werden. {_frage_fuer_aktion(aktuelle_aktion)}"
+            "Die Eingabe konnte nicht eindeutig als plausibler Zahlenwert verarbeitet werden. "
+            + _frage_fuer_aktion(aktuelle_aktion)
         )
         return
-
-    if art == "wert":
-        _speichere_direktwert(alt_name, kennzahl, float(wert))
-    elif art == "faktor":
-        _setze_modus(alt_name, kennzahl, "berechnen")
-        _faktoren(alt_name, kennzahl)[faktor] = float(wert)
-        _aktualisiere_berechneten_wert(alt_name, kennzahl)
-
+    _speichere_direktwert(alt_name, kennzahl, float(wert))
     _assistententext_hinzufuegen(_naechste_frage_oder_bestaetigung())
 
 
@@ -1109,7 +1177,7 @@ def baue_system_prompt() -> str:
             {
                 "gewichte": erg["gewichte"],
                 "dim_scores": erg["dim_scores"],
-                "nutzwerte": erg["nutzwerte"],
+                "gesamtpunktzahlen": erg["nutzwerte"],
                 "raenge": erg["raenge"],
                 "empfehlung": erg["empfehlung"],
             },
@@ -1125,7 +1193,7 @@ def baue_system_prompt() -> str:
             kontext += "\nLetztes Sensitivitätsergebnis: " + json.dumps(
                 {
                     "gewichte": erg["gewichte"],
-                    "nutzwerte": erg["nutzwerte"],
+                    "gesamtpunktzahlen": erg["nutzwerte"],
                     "raenge": erg["raenge"],
                     "empfehlung": erg["empfehlung"],
                 },
@@ -1137,7 +1205,7 @@ def baue_system_prompt() -> str:
             {
                 "gewichte": erg["gewichte"],
                 "dim_scores": erg["dim_scores"],
-                "nutzwerte": erg["nutzwerte"],
+                "gesamtpunktzahlen": erg["nutzwerte"],
                 "raenge": erg["raenge"],
                 "empfehlung": erg["empfehlung"],
                 "robustheit": st.session_state.robustheit,
@@ -1147,58 +1215,52 @@ def baue_system_prompt() -> str:
 
     if phase == 0:
         phasenanweisung = (
-            "Begrüßen Sie die nutzende Person in zwei bis drei kurzen Sätzen. "
-            "Die Anwendung zeigt die sieben Phasen in einer Tabelle; wiederholen "
-            "Sie diese nicht einzeln. Bieten Sie an, einzelne Phasen auf Wunsch "
-            "näher zu erläutern, und fragen Sie, ob der Prozess gestartet werden soll. "
-            "Bei Zustimmung rufen Sie naechste_phase auf."
+            "Der Einstiegstext und der Phasenüberblick wurden bereits angezeigt. "
+            "Beantworten Sie Rückfragen kurz. Wenn die nutzende Person beginnen möchte, "
+            "rufen Sie naechste_phase auf."
         )
     elif phase == 1:
         if not st.session_state.vorlaeufige_typen:
             phasenanweisung = (
-                "Die Szenariotypen werden einmalig in einer Tabelle angezeigt. "
-                "Bieten Sie an, einzelne Szenarien näher zu beschreiben. Fragen "
-                "Sie, ob unterschiedliche Szenariotypen oder unterschiedliche "
-                "Ausprägungen desselben Typs verglichen werden sollen. Speichern "
-                "Sie die ausgewählten Typen mit setze_szenario_typen."
+                "Die auswählbaren Szenariotypen wurden bereits einmalig als Stichpunkte "
+                "angezeigt. Beantworten Sie Rückfragen kurz und beschreiben Sie ein "
+                "Szenario nur auf ausdrückliche Nachfrage. Fragen Sie ansonsten direkt "
+                "nach der Auswahl und speichern Sie diese mit setze_szenario_typen."
             )
         elif (
             any("Verlagerung" in typ for typ in st.session_state.vorlaeufige_typen)
             and not st.session_state.vorlaeufige_baureihe
         ):
             phasenanweisung = (
-                "Fragen Sie nach der betroffenen Baureihe. Sobald sie eindeutig "
-                "genannt wurde, rufen Sie setze_baureihe auf."
+                "Fragen Sie in genau einem kurzen Satz nach der betroffenen Baureihe. "
+                "Sobald sie eindeutig genannt wurde, rufen Sie setze_baureihe auf."
             )
         else:
             phasenanweisung = (
-                "Definieren Sie mindestens zwei Handlungsalternativen. Bei einem "
-                "Szenariotyp sind dies unterschiedliche Ausprägungen. Bei mehreren "
-                "Typen muss jede Alternative einem ausgewählten Typ und einer "
-                "verfügbaren Datengrundlage zugeordnet werden. Verfügbare "
-                f"Datengrundlagen: {', '.join(VERFUEGBARE_DATENOPTIONEN)}. "
-                "Standort C darf angeboten werden. Wenn alle Angaben vorliegen, "
-                "rufen Sie finalisiere_alternativen auf."
+                "Fragen Sie kurz nach mindestens zwei konkreten Handlungsalternativen. "
+                f"Verfügbare Datengrundlagen: {', '.join(VERFUEGBARE_DATENOPTIONEN)}. "
+                "Standort C darf angeboten werden. Erläutern Sie Ausprägungen nur auf "
+                "Nachfrage. Wenn alle Angaben vorliegen, rufen Sie "
+                "finalisiere_alternativen auf."
             )
     elif phase == 2:
         phasenanweisung = (
-            "Die Gewichtung erfolgt über Schieberegler und beginnt bei jeweils "
-            "20 Prozent. Bieten Sie an, einzelne Leistungsdimensionen auf Wunsch "
-            "näher zu beschreiben. Wenn die nutzende Person die Gewichtung bestätigt, "
-            "rufen Sie naechste_phase auf."
+            "Die Gewichtung erfolgt über Schieberegler; ihre Summe beträgt 100 Prozent. "
+            "Beschreiben Sie eine Leistungsdimension nur auf Wunsch. Wenn die nutzende "
+            "Person die Gewichtung bestätigt, rufen Sie naechste_phase auf."
         )
     elif phase == 4:
         phasenanweisung = (
-            "Die Anwendung zeigt Normalisierung, Dimensionswerte und Gesamtnutzwerte. "
+            "Die Anwendung zeigt Normalisierung, Dimensionswerte und Gesamtpunktzahlen. "
             "Beantworten Sie Rückfragen als Fließtext. Bei Bestätigung rufen Sie "
             "naechste_phase auf."
         )
     elif phase == 5:
         phasenanweisung = (
             "Die nutzende Person variiert die Gewichtungen in der Oberfläche. "
-            "Nach ihren Versuchen muss sie das Ergebnis als robust, nicht robust "
-            "oder unklar einschätzen. Speichern Sie diese Einschätzung und eine "
-            "knappe Begründung mit speichere_robustheit."
+            "Nach ihren Versuchen soll sie das Ergebnis als robust, nicht robust "
+            "oder unklar einschätzen und auffällige Veränderungen dokumentieren. "
+            "Speichern Sie Einschätzung und Beobachtungen mit speichere_robustheit."
         )
     else:
         phasenanweisung = (
@@ -1213,9 +1275,10 @@ Verbindliche Regeln:
 - Sprechen Sie die nutzende Person konsequent mit "Sie" an.
 - Verwenden Sie keine Emojis.
 - Schreiben Sie sachlich, professionell und präzise.
+- Formulieren Sie grundsätzlich höchstens zwei kurze Sätze, außer eine ausführliche Erklärung wird ausdrücklich verlangt.
 - Beantworten Sie Rückfragen als Fließtext und nicht als Stichpunkte.
 - Sämtliche numerischen Berechnungen erfolgen ausschließlich im Anwendungscode.
-- Berechnen oder schätzen Sie keine Normwerte, Dimensionswerte, Nutzwerte oder Rangfolgen.
+- Berechnen oder schätzen Sie keine Normwerte, Dimensionswerte, Gesamtpunktzahlen oder Rangfolgen.
 - Der Prozess wird streng sequenziell durchlaufen. Fordern Sie niemals zum Zurückspringen auf.
 - Bleiben Sie in der aktuellen Phase.
 - Erklären Sie Phasen, Szenarien und Leistungsdimensionen nur auf Nachfrage.
@@ -1324,6 +1387,7 @@ def fuehre_werkzeug_aus(aufruf) -> str:
         phase = st.session_state.phase
         if phase == 0:
             st.session_state.phase = 1
+            st.session_state.phase1_gestartet = False
         elif phase == 2:
             st.session_state.phase = 3
             st.session_state.phase3_gestartet = False
@@ -1440,6 +1504,7 @@ def fuehre_dialog_runde():
         if not tool_aufrufe:
             return
 
+        phase_vor_werkzeugen = st.session_state.phase
         ergebnisse = []
         for aufruf in tool_aufrufe:
             ergebnisse.append(
@@ -1451,9 +1516,9 @@ def fuehre_dialog_runde():
             )
         st.session_state.messages.append({"role": "user", "content": ergebnisse})
 
-        if st.session_state.phase == 3 and any(
-            aufruf.name == "naechste_phase" for aufruf in tool_aufrufe
-        ):
+        # Nach einem Phasenwechsel wird kein zweiter Modelltext erzeugt. Der
+        # Einstieg der neuen Phase wird beim nächsten Rerun einmalig angezeigt.
+        if st.session_state.phase != phase_vor_werkzeugen:
             return
 
 
@@ -1490,6 +1555,7 @@ for schluessel, standard in [
     ("sensitivitaetslaeufe", []),
     ("robustheit", None),
     ("phase0_gestartet", False),
+    ("phase1_gestartet", False),
     ("phase3_gestartet", False),
     ("phase6_gestartet", False),
 ]:
@@ -1501,7 +1567,6 @@ st.title("Konfiguration globaler Produktionsnetzwerke")
 
 with st.sidebar:
     st.subheader("Phasen")
-    st.markdown("Der Prozess wird streng sequenziell durchlaufen.")
     for nummer in range(ANZAHL_PHASEN):
         if nummer < st.session_state.phase:
             status = "Abgeschlossen"
@@ -1535,14 +1600,32 @@ if st.session_state.alternativen:
 
 if PHASE == 0 and not st.session_state.phase0_gestartet:
     st.session_state.phase0_gestartet = True
-    with st.spinner("Anwendung wird gestartet"):
-        st.session_state.messages.append(
-            {
-                "role": "user",
-                "content": AUTO_MARKER + " Starten Sie Phase 0.",
-            }
-        )
-        fuehre_dialog_runde()
+    phasenzeilen = [
+        f"| {PHASEN[nummer]['titel']} | {PHASEN[nummer]['kurz']} |"
+        for nummer in range(1, ANZAHL_PHASEN)
+    ]
+    phasentabelle = (
+        "| Phase | Inhalt |\n|---|---|\n" + "\n".join(phasenzeilen)
+    )
+    _assistententext_hinzufuegen(
+        "Diese Anwendung unterstützt Sie dabei, Handlungsalternativen für globale "
+        "Produktionsnetzwerke systematisch zu vergleichen und eine begründete "
+        "Empfehlung abzuleiten. Auf Wunsch erläutere ich einzelne Phasen näher.\n\n"
+        + phasentabelle
+        + "\n\nMöchten Sie den Entscheidungsprozess beginnen?"
+    )
+    st.rerun()
+
+if PHASE == 1 and not st.session_state.phase1_gestartet:
+    st.session_state.phase1_gestartet = True
+    szenarien_liste = "\n".join(f"- {typ}" for typ in SZENARIO_TYPEN)
+    _assistententext_hinzufuegen(
+        "Wählen Sie mindestens zwei Handlungsalternativen. Diese können "
+        "unterschiedlichen Szenariotypen angehören oder unterschiedliche "
+        "Ausprägungen desselben Szenariotyps darstellen. Auf Wunsch erläutert "
+        "der Entscheidungsassistent einzelne Szenarien näher.\n\n"
+        + szenarien_liste
+    )
     st.rerun()
 
 if PHASE == 3 and not st.session_state.phase3_gestartet:
@@ -1571,39 +1654,14 @@ if PHASE == 6 and not st.session_state.phase6_gestartet:
 zeige_verlauf(letzte_assistentenantwort_auslassen=PHASE in (3, 6))
 
 
-if PHASE == 0:
-    st.divider()
-    st.markdown("**Überblick über den Entscheidungsprozess**")
-    zeige_tabelle_zentriert(
-        [
-            {"Phase": PHASEN[nummer]["titel"], "Inhalt": PHASEN[nummer]["kurz"]}
-            for nummer in range(1, ANZAHL_PHASEN)
-        ]
-    )
-
-if PHASE == 1 and not st.session_state.vorlaeufige_typen:
-    st.divider()
-    st.subheader(PHASEN[1]["titel"])
-    st.markdown(
-        "Wählen Sie mindestens zwei Handlungsalternativen. Diese können "
-        "unterschiedlichen Szenariotypen angehören oder unterschiedliche "
-        "Ausprägungen desselben Szenariotyps darstellen. Auf Wunsch erläutert "
-        "der Entscheidungsassistent einzelne Szenarien näher."
-    )
-    zeige_tabelle_zentriert(
-        [
-            {"Nr.": index, "Szenariotyp": typ}
-            for index, typ in enumerate(SZENARIO_TYPEN, start=1)
-        ]
-    )
 
 if PHASE == 2:
     st.divider()
     st.subheader(PHASEN[2]["titel"])
     st.markdown(
-        "Legen Sie die relative Bedeutung der fünf Leistungsdimensionen fest. "
-        "Alle Gewichtungen beginnen bei 20 Prozent und ergeben zusammen stets "
-        "100 Prozent. Eine Leistungsdimension kann im Chat näher erläutert werden."
+        "Passen Sie die Gewichtung der Leistungsdimensionen über die Schieberegler an. "
+        "Die Summe beträgt stets 100 Prozent. Auf Wunsch erläutert der "
+        "Entscheidungsassistent einzelne Leistungsdimensionen näher."
     )
     zeige_gewichts_slider(ALLE_DIMENSIONEN, "gewichte", "basis")
     st.markdown(
@@ -1616,18 +1674,11 @@ if PHASE == 3:
     st.subheader(PHASEN[3]["titel"])
     with st.chat_message("assistant"):
         st.markdown(
-            "In dieser Phase werden die relevanten Kennzahlenwerte zusammengeführt. "
-            "Vorhandene Werte stammen aus der Datengrundlage. Fehlende Werte können "
-            "Sie direkt angeben oder, sofern eine Formel hinterlegt ist, aus "
-            "Teilwerten berechnen lassen. Eingaben lassen sich bis zur Bestätigung "
-            "der Tabelle jederzeit korrigieren."
+            "In dieser Phase werden vorhandene Systemwerte und Ihre Eingaben "
+            "zusammengeführt. Fehlende Kennzahlen können direkt angegeben oder aus "
+            "Teilwerten berechnet werden; Korrekturen sind bis zur Bestätigung möglich."
         )
     zeige_tabelle_zentriert(datenuebersicht())
-    with st.expander("Hinterlegte Berechnungsmöglichkeiten"):
-        zeige_tabelle_zentriert(formel_uebersicht_fuer_ui())
-        st.markdown(
-            "Die Beispielwerte des Validierungsleitfadens sind nicht im Quellcode hinterlegt."
-        )
     zeige_aktuellen_bot_text()
 
 if PHASE == 4:
@@ -1682,16 +1733,16 @@ if PHASE == 4:
         zeilen.append(zeile)
     zeige_tabelle_zentriert(zeilen)
 
-    st.markdown("### 3. Berechnung der Gesamtnutzwerte")
+    st.markdown("### 3. Berechnung der Gesamtpunktzahlen")
     st.markdown(
         "Im letzten Schritt werden die Dimensionswerte mit den festgelegten "
-        "Gewichtungen multipliziert und zu einem Gesamtnutzwert addiert."
+        "Gewichtungen multipliziert und zu einer Gesamtpunktzahl addiert."
     )
     ranking = [
         {
             "Rang": erg["raenge"][name],
             "Alternative": name,
-            "Gesamtnutzwert": erg["nutzwerte"][name],
+            "Gesamtpunktzahl": erg["nutzwerte"][name],
         }
         for name in sorted(erg["nutzwerte"], key=erg["nutzwerte"].get, reverse=True)
     ]
@@ -1739,15 +1790,16 @@ if PHASE == 5:
             {
                 "Rang": erg["raenge"][name],
                 "Alternative": name,
-                "Gesamtnutzwert": erg["nutzwerte"][name],
+                "Gesamtpunktzahl": erg["nutzwerte"][name],
             }
             for name in sorted(erg["nutzwerte"], key=erg["nutzwerte"].get, reverse=True)
         ]
     )
     st.info(f"Aktuelle Empfehlung im Sensitivitätstest: {erg['empfehlung']}")
     st.markdown(
-        "Nachdem Sie ausreichend Gewichtungen getestet haben, teilen Sie mir im "
-        "Chat mit, ob Sie das Ergebnis als robust, nicht robust oder unklar bewerten."
+        "Teilen Sie mir anschließend Ihre Einschätzung zur Robustheit mit und "
+        "dokumentieren Sie Auffälligkeiten, beispielsweise Änderungen der Rangfolge "
+        "oder der Empfehlung."
     )
 
 if PHASE == 6 and st.session_state.basis_ergebnis:
@@ -1783,7 +1835,7 @@ if PHASE == 6 and st.session_state.basis_ergebnis:
         {
             "Rang": erg["raenge"][name],
             "Alternative": name,
-            "Gesamtnutzwert": erg["nutzwerte"][name],
+            "Gesamtpunktzahl": erg["nutzwerte"][name],
         }
         for name in sorted(erg["nutzwerte"], key=erg["nutzwerte"].get, reverse=True)
     ]
