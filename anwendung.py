@@ -1034,6 +1034,298 @@ def _versuche_benannte_aenderung(text: str, aktuelle_aktion=None) -> Optional[st
     return "Gespeichert: " + "; ".join(meldungen) + "."
 
 
+
+def _phase3_interpretationskontext(aktuelle_aktion=None) -> dict:
+    """Erstellt den fachlich zulässigen Kontext für die semantische Eingabeanalyse.
+
+    Das Sprachmodell erhält ausschließlich Bezeichnungen und Eingabestrukturen. Es
+    berechnet keine Kennzahlen und entscheidet nicht über die Gültigkeit der Werte.
+    """
+    alternativen = []
+    for alternative in st.session_state.alternativen:
+        datenoption = alternative["datenoption"]
+        aktive = aktive_kennzahlen_alternative(alternative)
+        berechenbare = {}
+        for kennzahl in aktive:
+            if not ist_formel_kennzahl(kennzahl, datenoption):
+                continue
+            berechenbare[kennzahl] = [
+                {
+                    "schluessel": schluessel,
+                    "bezeichnung": bezeichnung,
+                    "einheit": einheit,
+                }
+                for schluessel, bezeichnung, einheit
+                in faktoren_fuer(kennzahl, datenoption)
+            ]
+        alternativen.append(
+            {
+                "name": alternative["name"],
+                "datenoption": datenoption,
+                "aktive_kennzahlen": aktive,
+                "berechenbare_kennzahlen": berechenbare,
+            }
+        )
+
+    aktuelle_abfrage = None
+    if aktuelle_aktion:
+        art, alt_name, kennzahl, faktor = aktuelle_aktion
+        aktuelle_abfrage = {
+            "art": art,
+            "alternative": alt_name,
+            "kennzahl": kennzahl,
+            "naechster_faktor": faktor,
+        }
+    return {
+        "alternativen": alternativen,
+        "aktuelle_abfrage": aktuelle_abfrage,
+    }
+
+
+def _interpretiere_phase3_semantisch(eingabe: str, aktuelle_aktion=None) -> Optional[dict]:
+    """Interpretiert freie Eingaben, ohne Werte zu berechnen oder zu speichern.
+
+    Die Funktion wird als zusätzliche Verständnisebene eingesetzt. Fällt der
+    Modellaufruf aus oder bleibt die Aussage unklar, greift anschließend weiterhin
+    die bestehende regelbasierte Verarbeitung.
+    """
+    kontext = _phase3_interpretationskontext(aktuelle_aktion)
+    werkzeug = {
+        "name": "strukturiere_dateneingabe",
+        "description": (
+            "Extrahiert direkte Kennzahlenwerte und Teilwerte zur Berechnung aus "
+            "einer freien Nutzereingabe. Es dürfen keine Werte berechnet werden."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "angaben": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "alternative": {
+                                "type": "string",
+                                "description": "Exakter Name einer Alternative aus dem Kontext.",
+                            },
+                            "art": {
+                                "type": "string",
+                                "enum": [
+                                    "direkter_kennzahlenwert",
+                                    "berechnungsfaktor",
+                                ],
+                            },
+                            "kennzahl": {
+                                "type": "string",
+                                "description": "Exakter Kennzahlenname aus dem Kontext.",
+                            },
+                            "wertname": {
+                                "type": "string",
+                                "description": (
+                                    "Bei einem Berechnungsfaktor der exakte "
+                                    "Faktorschlüssel aus dem Kontext, sonst leer."
+                                ),
+                            },
+                            "wert": {"type": "number"},
+                        },
+                        "required": [
+                            "alternative",
+                            "art",
+                            "kennzahl",
+                            "wertname",
+                            "wert",
+                        ],
+                    },
+                },
+                "mehrdeutig": {"type": "boolean"},
+                "rueckfrage": {
+                    "type": "string",
+                    "description": (
+                        "Kurze Rückfrage, wenn eine eindeutige Zuordnung nicht "
+                        "möglich ist. Sonst leer."
+                    ),
+                },
+            },
+            "required": ["angaben", "mehrdeutig", "rueckfrage"],
+        },
+    }
+    system = f"""Sie strukturieren ausschließlich Dateneingaben für Phase 3 einer
+Anwendung zur Konfiguration globaler Produktionsnetzwerke.
+
+Regeln:
+- Extrahieren Sie nur ausdrücklich genannte Zahlenwerte.
+- Berechnen, addieren, dividieren oder schätzen Sie keine Werte.
+- Ordnen Sie Angaben nur den im Kontext enthaltenen Alternativen, Kennzahlen und
+  Berechnungsfaktoren zu.
+- Verwenden Sie für Alternative, Kennzahl und wertname exakt die Bezeichnungen
+  beziehungsweise Faktorschlüssel aus dem Kontext.
+- Ein fertiger Istwert einer Kennzahl erhält die Art direkter_kennzahlenwert.
+- Ein Teilwert für eine hinterlegte Formel erhält die Art berechnungsfaktor.
+- Korrekturen werden genauso wie neue Angaben extrahiert; der neue Wert ist maßgeblich.
+- Mehrere Angaben in einem Satz werden als mehrere Elemente ausgegeben.
+- Die aktuelle Abfrage darf zur Auflösung kurzer Antworten wie '7200 Euro' genutzt werden.
+- Ist eine Zuordnung nicht eindeutig, geben Sie keine Vermutung aus, setzen Sie
+  mehrdeutig auf true und formulieren Sie genau eine kurze Rückfrage auf Deutsch.
+
+Zulässiger Kontext:
+{json.dumps(kontext, ensure_ascii=False)}"""
+    try:
+        antwort = client.messages.create(
+            model=MODELL,
+            max_tokens=500,
+            thinking={"type": "disabled"},
+            system=system,
+            messages=[{"role": "user", "content": eingabe}],
+            tools=[werkzeug],
+            tool_choice={"type": "tool", "name": "strukturiere_dateneingabe"},
+        )
+    except Exception:
+        return None
+
+    for block in antwort.content:
+        if (
+            getattr(block, "type", None) == "tool_use"
+            and getattr(block, "name", None) == "strukturiere_dateneingabe"
+        ):
+            daten = getattr(block, "input", None)
+            return daten if isinstance(daten, dict) else None
+    return None
+
+
+def _alternative_aus_interpretation(
+    bezeichnung: str,
+    aktuelle_aktion=None,
+) -> Optional[str]:
+    bezeichnung_norm = _norm_text(bezeichnung)
+    treffer = []
+    for alternative in st.session_state.alternativen:
+        if bezeichnung_norm in {
+            _norm_text(alternative["name"]),
+            _norm_text(alternative["datenoption"]),
+        }:
+            treffer.append(alternative["name"])
+    if len(set(treffer)) == 1:
+        return treffer[0]
+    if not bezeichnung_norm and aktuelle_aktion:
+        return aktuelle_aktion[1]
+    return None
+
+
+def _kennzahl_aus_interpretation(
+    bezeichnung: str,
+    alt_name: str,
+) -> Optional[str]:
+    alternative = alternative_nach_name(alt_name)
+    if not alternative:
+        return None
+    bezeichnung_norm = _norm_text(bezeichnung)
+    treffer = [
+        kennzahl
+        for kennzahl in aktive_kennzahlen_alternative(alternative)
+        if _norm_text(kennzahl) == bezeichnung_norm
+    ]
+    return treffer[0] if len(treffer) == 1 else None
+
+
+def _faktor_aus_interpretation(
+    kennzahl: str,
+    datenoption: str,
+    wertname: str,
+) -> Optional[str]:
+    wertname_norm = _norm_text(wertname)
+    for schluessel, bezeichnung, _ in faktoren_fuer(kennzahl, datenoption):
+        if wertname_norm in {_norm_text(schluessel), _norm_text(bezeichnung)}:
+            return schluessel
+
+    # Wenige fachlich eindeutige Synonyme erhöhen die Robustheit, ohne die
+    # Berechnungslogik oder die in der Arbeit dokumentierten Datenstrukturen zu ändern.
+    synonyme = {
+        "fek": "fertigungseinzelkosten_pro_einheit",
+        "fertigungseinzelkosten": "fertigungseinzelkosten_pro_einheit",
+        "wartezeit": "liegezeit",
+        "energiebedarf": "gesamtenergieverbrauch",
+    }
+    kandidat = synonyme.get(wertname_norm)
+    erlaubte = {
+        schluessel
+        for schluessel, _, _ in faktoren_fuer(kennzahl, datenoption)
+    }
+    return kandidat if kandidat in erlaubte else None
+
+
+def _wende_semantische_phase3_angaben_an(
+    interpretation: Optional[dict],
+    aktuelle_aktion=None,
+) -> Optional[str]:
+    if not isinstance(interpretation, dict):
+        return None
+
+    meldungen = []
+    for angabe in interpretation.get("angaben") or []:
+        if not isinstance(angabe, dict):
+            continue
+        alt_name = _alternative_aus_interpretation(
+            str(angabe.get("alternative") or ""),
+            aktuelle_aktion,
+        )
+        if not alt_name:
+            continue
+        alternative = alternative_nach_name(alt_name)
+        if not alternative:
+            continue
+        kennzahl = _kennzahl_aus_interpretation(
+            str(angabe.get("kennzahl") or ""),
+            alt_name,
+        )
+        if not kennzahl:
+            continue
+        try:
+            wert = float(angabe.get("wert"))
+        except (TypeError, ValueError):
+            continue
+
+        art = str(angabe.get("art") or "")
+        if art == "direkter_kennzahlenwert":
+            if not _wert_ist_plausibel(kennzahl, wert):
+                continue
+            _speichere_direktwert(alt_name, kennzahl, wert)
+            meldungen.append(
+                f"{kennzahl} für {alt_name}: {_tabellenwert(wert)}"
+            )
+            continue
+
+        if art != "berechnungsfaktor":
+            continue
+        datenoption = alternative["datenoption"]
+        if not ist_formel_kennzahl(kennzahl, datenoption) or wert <= 0:
+            continue
+        faktor = _faktor_aus_interpretation(
+            kennzahl,
+            datenoption,
+            str(angabe.get("wertname") or ""),
+        )
+        if not faktor:
+            continue
+        _setze_modus(alt_name, kennzahl, "berechnen")
+        _faktoren(alt_name, kennzahl)[faktor] = wert
+        _aktualisiere_berechneten_wert(alt_name, kennzahl)
+        info = faktor_information(kennzahl, faktor, datenoption)
+        bezeichnung = info[0] if info else faktor
+        meldungen.append(
+            f"{bezeichnung} für {alt_name}: {_tabellenwert(wert)}"
+        )
+
+    if meldungen:
+        prefix = "Gespeichert: " + "; ".join(meldungen) + "."
+        return _naechste_frage_oder_bestaetigung(prefix)
+
+    if interpretation.get("mehrdeutig"):
+        rueckfrage = str(interpretation.get("rueckfrage") or "").strip()
+        if rueckfrage:
+            return rueckfrage
+    return None
+
+
 def _naechste_frage_oder_bestaetigung(prefix: str = "") -> str:
     aktion = _naechste_phase3_aktion()
     if aktion:
@@ -1055,18 +1347,30 @@ def verarbeite_phase3_eingabe(eingabe: str):
         )
         return
 
+    # Eine eindeutige Bestätigung wird ohne Modellaufruf verarbeitet. Korrekturen
+    # und sonstige freie Formulierungen werden anschließend semantisch interpretiert.
+    if aktuelle_aktion is None and _ist_bestaetigung(eingabe):
+        st.session_state.phase = 4
+        st.session_state.basis_ergebnis = None
+        _assistententext_hinzufuegen(
+            "Vielen Dank. Die bestätigte Datengrundlage wird nun mathematisch bewertet."
+        )
+        return
+
+    interpretation = _interpretiere_phase3_semantisch(eingabe, aktuelle_aktion)
+    semantische_antwort = _wende_semantische_phase3_angaben_an(
+        interpretation,
+        aktuelle_aktion,
+    )
+    if semantische_antwort:
+        _assistententext_hinzufuegen(semantische_antwort)
+        return
+
     if aktuelle_aktion is None:
-        if _ist_bestaetigung(eingabe):
-            st.session_state.phase = 4
-            st.session_state.basis_ergebnis = None
-            _assistententext_hinzufuegen(
-                "Vielen Dank. Die bestätigte Datengrundlage wird nun mathematisch bewertet."
-            )
-        else:
-            _assistententext_hinzufuegen(
-                "Bitte bestätigen Sie die Tabelle oder nennen Sie die zu korrigierende "
-                "Kennzahl beziehungsweise den zu korrigierenden Teilwert mit dem neuen Wert."
-            )
+        _assistententext_hinzufuegen(
+            "Bitte bestätigen Sie die Tabelle oder nennen Sie die zu korrigierende "
+            "Kennzahl beziehungsweise den zu korrigierenden Teilwert mit dem neuen Wert."
+        )
         return
 
     art, alt_name, kennzahl, faktor = aktuelle_aktion
@@ -1261,8 +1565,11 @@ def baue_system_prompt() -> str:
         phasenanweisung = (
             "Die nutzende Person variiert die Gewichtungen in der Oberfläche. "
             "Nach ihren Versuchen soll sie das Ergebnis als robust, nicht robust "
-            "oder unklar einschätzen und auffällige Veränderungen dokumentieren. "
-            "Speichern Sie Einschätzung und Beobachtungen mit speichere_robustheit."
+            "oder unklar einschätzen und Beobachtungen nennen. Eine ausdrückliche "
+            "Angabe, dass keine Auffälligkeiten festgestellt wurden, ist eine gültige "
+            "Beobachtung und muss akzeptiert werden. Speichern Sie Einschätzung und "
+            "Beobachtungen mit speichere_robustheit. Wenn keine Auffälligkeiten "
+            "vorliegen, verwenden Sie als Begründung 'Keine Auffälligkeiten festgestellt.'."
         )
     else:
         phasenanweisung = (
@@ -1375,7 +1682,14 @@ def tool_definitionen() -> list[dict]:
                             "type": "string",
                             "enum": ["robust", "nicht robust", "unklar"],
                         },
-                        "begruendung": {"type": "string"},
+                        "begruendung": {
+                            "type": "string",
+                            "description": (
+                                "Beobachtungen aus der Sensitivitätsanalyse. "
+                                "Wenn keine Auffälligkeiten vorliegen, ist ausdrücklich "
+                                "'Keine Auffälligkeiten festgestellt.' zu verwenden."
+                            ),
+                        },
                     },
                     "required": ["bewertung"],
                 },
@@ -1469,8 +1783,8 @@ def fuehre_werkzeug_aus(aufruf) -> str:
             "begruendung": str(aufruf.input.get("begruendung") or "").strip(),
         }
         st.session_state.phase = 6
-        st.session_state.phase6_gestartet = True
-        return "Die Robustheitsbewertung wurde gespeichert. Erstellen Sie jetzt die kurze Abschlusszusammenfassung."
+        st.session_state.phase6_gestartet = False
+        return "Die Robustheitsbewertung wurde gespeichert."
 
     return "Unbekanntes Werkzeug."
 
@@ -1545,6 +1859,88 @@ def _bestaetigt_gewichtung(eingabe: str) -> bool:
     return any(signal in text for signal in signale)
 
 
+def _enthaelt_keine_auffaelligkeiten(eingabe: str) -> bool:
+    """Erkennt Aussagen, dass im Sensitivitätstest keine Auffälligkeiten vorlagen."""
+    text = eingabe.lower()
+    signale = (
+        "keine auffälligkeiten",
+        "keine auffaelligkeiten",
+        "nichts auffällig",
+        "nichts auffaellig",
+        "keine besonderheiten",
+        "keine abweichungen",
+        "keine veränderungen",
+        "keine veraenderungen",
+        "rangfolge blieb gleich",
+        "empfehlung blieb gleich",
+    )
+    return any(signal in text for signal in signale)
+
+
+def _robustheitsbewertung_aus_text(eingabe: str) -> Optional[str]:
+    """Liest eine eindeutige Robustheitsbewertung aus freiem Text."""
+    text = re.sub(r"[^a-zäöüß ]", " ", eingabe.lower())
+    text = re.sub(r"\s+", " ", text).strip()
+
+    if re.search(
+        r"\bnicht(?: besonders)?\s+robust\b|\bwenig\s+robust\b|"
+        r"\bnicht\s+stabil\b|\binstabil\b|\bsensitiv\b",
+        text,
+    ):
+        return "nicht robust"
+    if re.search(
+        r"\bunklar\b|\bnicht eindeutig\b|\bnicht beurteilbar\b|"
+        r"\bkann ich nicht beurteilen\b",
+        text,
+    ):
+        return "unklar"
+    if re.search(r"\brobust\b|\bstabil\b", text):
+        return "robust"
+    return None
+
+
+def _verarbeite_phase5_eingabe(eingabe: str) -> bool:
+    """Verarbeitet eindeutige Robustheitsaussagen zuverlässig im Anwendungscode.
+
+    Rückgabe True bedeutet, dass die Eingabe vollständig behandelt wurde.
+    Mehrdeutige Rückfragen werden weiterhin an das Sprachmodell übergeben.
+    """
+    bewertung = _robustheitsbewertung_aus_text(eingabe)
+    keine_auffaelligkeiten = _enthaelt_keine_auffaelligkeiten(eingabe)
+
+    if keine_auffaelligkeiten:
+        st.session_state.robustheit_beobachtung_vorlaeufig = (
+            "Keine Auffälligkeiten festgestellt."
+        )
+
+    if bewertung is None:
+        if keine_auffaelligkeiten:
+            _assistententext_hinzufuegen(
+                "Es wurden keine Auffälligkeiten festgestellt. Bewerten Sie das "
+                "Ergebnis bitte noch als robust, nicht robust oder unklar."
+            )
+            return True
+        return False
+
+    begruendung = st.session_state.get(
+        "robustheit_beobachtung_vorlaeufig",
+        "",
+    )
+    if keine_auffaelligkeiten:
+        begruendung = "Keine Auffälligkeiten festgestellt."
+    elif not begruendung:
+        begruendung = eingabe.strip()
+
+    st.session_state.robustheit = {
+        "bewertung": bewertung,
+        "begruendung": begruendung,
+    }
+    st.session_state.robustheit_beobachtung_vorlaeufig = ""
+    st.session_state.phase = 6
+    st.session_state.phase6_gestartet = False
+    return True
+
+
 def _uebernehme_slider_gewichtung():
     """Überträgt die aktuell sichtbaren Reglerwerte sicher in den Sitzungsspeicher."""
     st.session_state.gewichte = {
@@ -1570,6 +1966,8 @@ def chat_eingabe(platzhalter: str = "Ihre Antwort"):
         st.session_state.phase3_gestartet = False
     elif st.session_state.phase == 3:
         verarbeite_phase3_eingabe(eingabe)
+    elif st.session_state.phase == 5 and _verarbeite_phase5_eingabe(eingabe):
+        pass
     else:
         with st.spinner("Antwort wird erstellt"):
             fuehre_dialog_runde()
@@ -1593,6 +1991,7 @@ for schluessel, standard in [
     ("sensitivitaet_ergebnis", None),
     ("sensitivitaetslaeufe", []),
     ("robustheit", None),
+    ("robustheit_beobachtung_vorlaeufig", ""),
     ("phase0_gestartet", False),
     ("phase1_gestartet", False),
     ("phase3_gestartet", False),
@@ -1837,8 +2236,8 @@ if PHASE == 5:
     st.info(f"Aktuelle Empfehlung im Sensitivitätstest: {erg['empfehlung']}")
     st.markdown(
         "Teilen Sie mir anschließend Ihre Einschätzung zur Robustheit mit und "
-        "dokumentieren Sie Auffälligkeiten, beispielsweise Änderungen der Rangfolge "
-        "oder der Empfehlung."
+        "nennen Sie beobachtete Auffälligkeiten. Falls keine aufgetreten sind, "
+        "können Sie ausdrücklich schreiben, dass keine Auffälligkeiten festgestellt wurden."
     )
 
 if PHASE == 6 and st.session_state.basis_ergebnis:
