@@ -1941,6 +1941,124 @@ def _verarbeite_phase5_eingabe(eingabe: str) -> bool:
     return True
 
 
+
+def _abschlussfazit_text() -> str:
+    """Erstellt die Abschlusszusammenfassung deterministisch aus den Ergebnissen."""
+    ergebnis = st.session_state.basis_ergebnis or {}
+    punktzahlen = ergebnis.get("nutzwerte", {})
+    if not punktzahlen:
+        return (
+            "Die Bewertung konnte nicht zusammengefasst werden, da keine "
+            "Gesamtpunktzahlen vorliegen."
+        )
+
+    sortiert = sorted(punktzahlen, key=punktzahlen.get, reverse=True)
+    beste = sortiert[0]
+    ranking_teile = [
+        f"Rang {ergebnis.get('raenge', {}).get(name, index + 1)}: {name} "
+        f"mit {punktzahlen[name]:.2f} Punkten"
+        for index, name in enumerate(sortiert)
+    ]
+    erster_absatz = (
+        "Die mathematische Bewertung auf Grundlage der initial festgelegten "
+        "Gewichtungen ergibt folgende Rangfolge: "
+        + "; ".join(ranking_teile)
+        + f". Damit wird {beste} als Handlungsalternative empfohlen."
+    )
+
+    dimensionshinweise = []
+    if len(sortiert) >= 2:
+        zweite = sortiert[1]
+        unterschiede = []
+        for dimension, wert_beste in ergebnis.get("dim_scores", {}).get(beste, {}).items():
+            wert_zweite = ergebnis.get("dim_scores", {}).get(zweite, {}).get(dimension)
+            if wert_zweite is None:
+                continue
+            differenz = wert_beste - wert_zweite
+            gewicht = ergebnis.get("gewichte", {}).get(dimension, 0.0)
+            unterschiede.append((abs(differenz) * gewicht, differenz, dimension))
+        unterschiede.sort(reverse=True)
+        for _, differenz, dimension in unterschiede[:3]:
+            if differenz > 0:
+                dimensionshinweise.append(f"Vorteile in der Leistungsdimension {dimension}")
+            elif differenz < 0:
+                dimensionshinweise.append(f"Nachteile in der Leistungsdimension {dimension}")
+    zweiter_absatz = ""
+    if dimensionshinweise:
+        zweiter_absatz = (
+            "Für die Rangfolge sind insbesondere "
+            + ", ".join(dimensionshinweise[:-1])
+            + (" sowie " if len(dimensionshinweise) > 1 else "")
+            + dimensionshinweise[-1]
+            + " relevant."
+        )
+
+    laeufe = st.session_state.get("sensitivitaetslaeufe", []) or []
+    basis_empfehlung = ergebnis.get("empfehlung")
+    wechsel = [
+        lauf for lauf in laeufe
+        if isinstance(lauf, dict) and lauf.get("empfehlung") != basis_empfehlung
+    ]
+    if laeufe:
+        if wechsel:
+            abweichende = sorted({
+                str(lauf.get("empfehlung"))
+                for lauf in wechsel
+                if lauf.get("empfehlung")
+            })
+            sensitivitaet_text = (
+                f"In der Sensitivitätsanalyse wurden {len(laeufe)} alternative "
+                f"Gewichtung(en) untersucht. In {len(wechsel)} Durchlauf/Durchläufen "
+                "änderte sich die Empfehlung"
+                + (f" zugunsten von {', '.join(abweichende)}" if abweichende else "")
+                + "."
+            )
+        else:
+            sensitivitaet_text = (
+                f"In der Sensitivitätsanalyse wurden {len(laeufe)} alternative "
+                "Gewichtung(en) untersucht; die erstplatzierte Alternative blieb "
+                "in allen dokumentierten Durchläufen unverändert."
+            )
+    else:
+        sensitivitaet_text = (
+            "Es wurde keine alternative Gewichtung als Sensitivitätslauf dokumentiert."
+        )
+
+    robustheit = st.session_state.get("robustheit") or {}
+    bewertung = str(robustheit.get("bewertung", "unklar")).strip()
+    beobachtung = str(robustheit.get("begruendung", "")).strip()
+    robustheit_text = f"Die nutzerseitige Einschätzung lautet: {bewertung}."
+    if beobachtung:
+        robustheit_text += f" Als Beobachtung wurde festgehalten: {beobachtung}"
+
+    if bewertung.lower() == "robust":
+        fazit = (
+            f"Fazit: Unter Berücksichtigung der mathematischen Bewertung und der "
+            f"Sensitivitätsanalyse wird {beste} als belastbare Handlungsempfehlung "
+            "ausgegeben."
+        )
+    elif bewertung.lower() == "nicht robust":
+        fazit = (
+            f"Fazit: Auf Grundlage der initialen Gewichtung wird {beste} empfohlen. "
+            "Da das Ergebnis als nicht robust eingeschätzt wurde, hängt die Rangfolge "
+            "jedoch wesentlich von der Gewichtung der Leistungsdimensionen ab und sollte "
+            "vor einer Umsetzung vertieft geprüft werden."
+        )
+    else:
+        fazit = (
+            f"Fazit: Auf Grundlage der initialen Gewichtung wird {beste} empfohlen. "
+            "Da die Robustheit als unklar eingeschätzt wurde, sollten zusätzliche "
+            "Gewichtungskombinationen oder ergänzende qualitative Kriterien geprüft werden."
+        )
+
+    abschnitte = [erster_absatz]
+    if zweiter_absatz:
+        abschnitte.append(zweiter_absatz)
+    abschnitte.append(sensitivitaet_text + " " + robustheit_text)
+    abschnitte.append(fazit)
+    return "\n\n".join(abschnitte)
+
+
 def _uebernehme_slider_gewichtung():
     """Überträgt die aktuell sichtbaren Reglerwerte sicher in den Sitzungsspeicher."""
     st.session_state.gewichte = {
@@ -2078,14 +2196,7 @@ if PHASE == 6 and not st.session_state.phase6_gestartet:
         st.error("Es liegt kein Basis-Ergebnis vor.")
         st.stop()
     st.session_state.phase6_gestartet = True
-    with st.spinner("Zusammenfassung wird erstellt"):
-        st.session_state.messages.append(
-            {
-                "role": "user",
-                "content": AUTO_MARKER + " Erstellen Sie die kurze Abschlusszusammenfassung.",
-            }
-        )
-        fuehre_dialog_runde()
+    _assistententext_hinzufuegen(_abschlussfazit_text())
     st.rerun()
 
 
@@ -2280,7 +2391,7 @@ if PHASE == 6 and st.session_state.basis_ergebnis:
     zeige_tabelle_zentriert(ranking)
     st.info(f"Handlungsempfehlung: {erg['empfehlung']}")
 
-    st.markdown("**Kurze Zusammenfassung**")
+    st.markdown("**Fazit und Gesamteinordnung**")
     zeige_aktuellen_bot_text()
 
     try:

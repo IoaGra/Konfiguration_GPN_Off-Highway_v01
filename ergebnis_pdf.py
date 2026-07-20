@@ -294,6 +294,72 @@ def _entscheidungserlaeuterung(ergebnis: dict) -> str:
     return text
 
 
+
+def _sensitivitaetsfazit(
+    ergebnis: dict,
+    sensitivitaetslaeufe: list[dict],
+    robustheit: Optional[Dict],
+) -> str:
+    """Fasst Basisbewertung, Sensitivitätsanalyse und Robustheit zusammen."""
+    punktzahlen = ergebnis.get("nutzwerte", {})
+    if not punktzahlen:
+        return "Es liegen keine Gesamtpunktzahlen für ein abschließendes Fazit vor."
+
+    sortiert = sorted(punktzahlen, key=punktzahlen.get, reverse=True)
+    beste = sortiert[0]
+    basis_text = _entscheidungserlaeuterung(ergebnis)
+
+    laeufe = sensitivitaetslaeufe or []
+    wechsel = [
+        lauf for lauf in laeufe
+        if isinstance(lauf, dict) and lauf.get("empfehlung") != beste
+    ]
+    if laeufe and wechsel:
+        sensibilitaet = (
+            f"In der Sensitivitätsanalyse wurden {len(laeufe)} alternative "
+            f"Gewichtung(en) untersucht. In {len(wechsel)} Durchlauf/Durchläufen "
+            "änderte sich die erstplatzierte Alternative."
+        )
+    elif laeufe:
+        sensibilitaet = (
+            f"In der Sensitivitätsanalyse wurden {len(laeufe)} alternative "
+            "Gewichtung(en) untersucht; die Empfehlung blieb in allen "
+            "dokumentierten Durchläufen unverändert."
+        )
+    else:
+        sensibilitaet = (
+            "Es wurde kein alternativer Sensitivitätslauf dokumentiert."
+        )
+
+    robustheit = _normalisiere_robustheit(robustheit) or {
+        "bewertung": "unklar",
+        "begruendung": "",
+    }
+    bewertung = str(robustheit.get("bewertung", "unklar")).strip()
+    begruendung = str(robustheit.get("begruendung", "")).strip()
+    einordnung = f"Die nutzerseitige Robustheitsbewertung lautet {bewertung}."
+    if begruendung:
+        einordnung += f" Dokumentierte Beobachtung: {begruendung}"
+
+    if bewertung.lower() == "robust":
+        schluss = (
+            f"Insgesamt wird {beste} als belastbare Handlungsempfehlung ausgegeben."
+        )
+    elif bewertung.lower() == "nicht robust":
+        schluss = (
+            f"Unter der initialen Gewichtung wird {beste} empfohlen. Da die "
+            "Bewertung nicht robust ist, sollte die Entscheidung vor einer Umsetzung "
+            "durch zusätzliche Gewichtungsszenarien und qualitative Kriterien abgesichert werden."
+        )
+    else:
+        schluss = (
+            f"Unter der initialen Gewichtung wird {beste} empfohlen. Die Robustheit "
+            "ist jedoch nicht eindeutig, sodass eine weiterführende Prüfung sinnvoll ist."
+        )
+
+    return " ".join([basis_text, sensibilitaet, einordnung, schluss])
+
+
 def _weitere_betrachtung(alternativen: list[dict]) -> str:
     typen = [str(alt.get("szenario_typ", "")) for alt in alternativen]
     if any("Verlagerung" in typ for typ in typen):
@@ -643,8 +709,15 @@ def erstelle_ergebnis_pdf(
             )
         )
 
-    story.append(Paragraph("Kurze Einordnung", stile["ZwischenTitel"]))
-    story.append(Paragraph(escape(_entscheidungserlaeuterung(ergebnis)), stile["Fliess"]))
+    story.append(Paragraph("Fazit", stile["ZwischenTitel"]))
+    story.append(
+        Paragraph(
+            escape(_sensitivitaetsfazit(ergebnis, sensitivitaetslaeufe, robustheit)),
+            stile["Fliess"],
+        )
+    )
+
+    story.append(Paragraph("Zusammenfassung des Entscheidungsprozesses", stile["ZwischenTitel"]))
     for abschnitt in _text_abschnitte(bot_text):
         story.append(Paragraph(escape(abschnitt), stile["Fliess"]))
 
