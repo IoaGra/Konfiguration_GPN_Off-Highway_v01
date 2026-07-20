@@ -1558,8 +1558,10 @@ def baue_system_prompt() -> str:
     elif phase == 4:
         phasenanweisung = (
             "Die Anwendung zeigt Normalisierung, Dimensionswerte und Gesamtpunktzahlen. "
-            "Beantworten Sie Rückfragen als Fließtext. Bei Bestätigung rufen Sie "
-            "naechste_phase auf."
+            "Beantworten Sie fachliche Rückfragen kurz als Fließtext. Fordern Sie keine "
+            "förmliche Bestätigung der Bewertung. Weisen Sie bei Bedarf lediglich darauf "
+            "hin, dass die nutzende Person im Chat den Start der Sensitivitätsanalyse "
+            "mitteilen kann; dieser Phasenwechsel wird von der Anwendung verarbeitet."
         )
     elif phase == 5:
         phasenanweisung = (
@@ -1838,10 +1840,15 @@ def fuehre_dialog_runde():
             return
 
 
-def _bestaetigt_gewichtung(eingabe: str) -> bool:
-    """Erkennt nur eine Bestätigung zum Fortfahren, keine Gewichtseingaben."""
+def _normalisiere_absichtstext(eingabe: str) -> str:
+    """Vereinheitlicht freie Texte für die robuste Absichtserkennung."""
     text = re.sub(r"[^a-zäöüß ]", " ", eingabe.lower())
-    text = re.sub(r"\s+", " ", text).strip()
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _bestaetigt_gewichtung(eingabe: str) -> bool:
+    """Erkennt natürliche Bestätigungen der sichtbaren Schieberegler."""
+    text = _normalisiere_absichtstext(eingabe)
     signale = (
         "weiter",
         "fortfahren",
@@ -1849,14 +1856,123 @@ def _bestaetigt_gewichtung(eingabe: str) -> bool:
         "weiter machen",
         "weitermachen",
         "gewichtung übernehmen",
+        "gewichtungen übernehmen",
         "gewichtung passt",
+        "gewichtungen passen",
+        "die gewichtung passt",
+        "die gewichtungen passen",
+        "passt für mich",
+        "passen für mich",
         "so passt es",
+        "so können die gewichtungen bleiben",
+        "gewichtungen können so bleiben",
+        "gewichtung kann so bleiben",
+        "gewichtungen sind in ordnung",
+        "gewichtung ist in ordnung",
+        "ich bin mit der gewichtung einverstanden",
+        "ich bin mit den gewichtungen einverstanden",
         "ist fertig",
         "bin fertig",
         "kann weitergehen",
         "kann weiter gehen",
     )
     return any(signal in text for signal in signale)
+
+
+def _moechte_sensitivitaetsanalyse_starten(eingabe: str) -> bool:
+    """Erkennt den ausdrücklichen Wunsch, Phase 4 abzuschließen."""
+    text = _normalisiere_absichtstext(eingabe)
+    signale = (
+        "sensitivitätsanalyse starten",
+        "sensitivitaetsanalyse starten",
+        "mit der sensitivitätsanalyse starten",
+        "mit der sensitivitaetsanalyse starten",
+        "zur sensitivitätsanalyse",
+        "zur sensitivitaetsanalyse",
+        "weiter zur sensitivitätsanalyse",
+        "weiter zur sensitivitaetsanalyse",
+        "mit der sensitivitätsanalyse fortfahren",
+        "mit der sensitivitaetsanalyse fortfahren",
+        "sensitivitätsanalyse beginnen",
+        "sensitivitaetsanalyse beginnen",
+        "die sensitivitätsanalyse durchführen",
+        "die sensitivitaetsanalyse durchfuehren",
+        "ich möchte fortfahren",
+        "ich moechte fortfahren",
+        "bewertung passt",
+        "ergebnis passt",
+        "das ergebnis passt",
+        "die bewertung passt",
+        "ich bestätige die bewertung",
+        "ich bestaetige die bewertung",
+    )
+    return any(signal in text for signal in signale)
+
+
+def _interpretiere_fortsetzungsabsicht(eingabe: str, phase: int) -> bool:
+    """Semantische Rückfallstufe für natürlich formulierte Bestätigungen.
+
+    Das Sprachmodell klassifiziert ausschließlich die Absicht. Es verändert keine
+    Werte, berechnet nichts und führt den Phasenwechsel nicht selbst aus.
+    """
+    if phase == 2:
+        ziel = (
+            "Die Person bestätigt, dass die über Schieberegler eingestellten "
+            "Gewichtungen passen, übernommen werden können oder der Prozess "
+            "mit der Datenerfassung fortgesetzt werden soll."
+        )
+    elif phase == 4:
+        ziel = (
+            "Die Person akzeptiert die angezeigte mathematische Bewertung oder "
+            "möchte ausdrücklich mit der Sensitivitätsanalyse fortfahren."
+        )
+    else:
+        return False
+
+    werkzeug = {
+        "name": "klassifiziere_fortsetzungsabsicht",
+        "description": "Klassifiziert ausschließlich, ob die Person fortfahren möchte.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "fortfahren": {"type": "boolean"},
+            },
+            "required": ["fortfahren"],
+        },
+    }
+    system = f"""Sie klassifizieren eine kurze Nutzereingabe innerhalb einer
+streng geführten Anwendung. Entscheiden Sie ausschließlich, ob die Eingabe die
+folgende Absicht eindeutig ausdrückt:
+
+{ziel}
+
+Regeln:
+- Setzen Sie fortfahren nur dann auf true, wenn die Fortsetzungsabsicht aus dem
+  Wortlaut oder der eindeutigen Bedeutung hervorgeht.
+- Fragen, Zweifel, Änderungswünsche oder fachliche Rückfragen ergeben false.
+- Extrahieren oder berechnen Sie keine Zahlenwerte.
+- Geben Sie ausschließlich den Werkzeugaufruf aus."""
+    try:
+        antwort = client.messages.create(
+            model=MODELL,
+            max_tokens=120,
+            thinking={"type": "disabled"},
+            system=system,
+            messages=[{"role": "user", "content": eingabe}],
+            tools=[werkzeug],
+            tool_choice={"type": "tool", "name": "klassifiziere_fortsetzungsabsicht"},
+        )
+    except Exception:
+        return False
+
+    for block in antwort.content:
+        if (
+            getattr(block, "type", None) == "tool_use"
+            and getattr(block, "name", None) == "klassifiziere_fortsetzungsabsicht"
+        ):
+            daten = getattr(block, "input", None)
+            return bool(daten.get("fortfahren")) if isinstance(daten, dict) else False
+    return False
 
 
 def _enthaelt_keine_auffaelligkeiten(eingabe: str) -> bool:
@@ -2078,12 +2194,28 @@ def chat_eingabe(platzhalter: str = "Ihre Antwort"):
     with st.chat_message("user"):
         st.markdown(eingabe)
 
-    if st.session_state.phase == 2 and _bestaetigt_gewichtung(eingabe):
-        _uebernehme_slider_gewichtung()
-        st.session_state.phase = 3
-        st.session_state.phase3_gestartet = False
+    if st.session_state.phase == 2:
+        fortfahren = _bestaetigt_gewichtung(eingabe)
+        if not fortfahren:
+            fortfahren = _interpretiere_fortsetzungsabsicht(eingabe, phase=2)
+        if fortfahren:
+            _uebernehme_slider_gewichtung()
+            st.session_state.phase = 3
+            st.session_state.phase3_gestartet = False
+        else:
+            with st.spinner("Antwort wird erstellt"):
+                fuehre_dialog_runde()
     elif st.session_state.phase == 3:
         verarbeite_phase3_eingabe(eingabe)
+    elif st.session_state.phase == 4:
+        fortfahren = _moechte_sensitivitaetsanalyse_starten(eingabe)
+        if not fortfahren:
+            fortfahren = _interpretiere_fortsetzungsabsicht(eingabe, phase=4)
+        if fortfahren:
+            st.session_state.phase = 5
+        else:
+            with st.spinner("Antwort wird erstellt"):
+                fuehre_dialog_runde()
     elif st.session_state.phase == 5 and _verarbeite_phase5_eingabe(eingabe):
         pass
     else:
@@ -2298,7 +2430,8 @@ if PHASE == 4:
     zeige_tabelle_zentriert(ranking)
     st.info(f"Rechnerische Empfehlung: {erg['empfehlung']}")
     st.markdown(
-        "Teilen Sie mir im Chat mit, wenn mit der Sensitivitätsanalyse fortgefahren werden kann."
+        "Schreiben Sie im Chat, dass Sie mit der Sensitivitätsanalyse starten möchten, "
+        "sobald Sie die dargestellten Ergebnisse geprüft haben."
     )
 
 if PHASE == 5:
